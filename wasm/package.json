@@ -1,0 +1,23 @@
+{
+  "name": "@miniset/wasm",
+  "version": "1.0.0",
+  "description": "Miniset WASM with GDAL/PROJ support",
+  "type": "module",
+  "main": "build/dist/miniset.js",
+  "scripts": {
+    "build": "make all",
+    "test": "node test.js",
+    "clean": "make clean"
+  },
+  "keywords": [
+    "gdal",
+    "proj",
+    "wasm",
+    "webassembly",
+    "gis",
+    "dem",
+    "photogrammetry"
+  ],
+  "author": "",
+  "license": "Apache-2.0"
+}
