@@ -21,3 +21,4 @@ dependencies:
   - pkg-config
   - ninja  
   - doxygen
+  - spqlite3
