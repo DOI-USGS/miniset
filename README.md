@@ -1,93 +1,239 @@
-# miniset
+# Miniset
 
+High-performance geospatial sensor modeling library with WebAssembly support for planetary science.
 
+## Features
 
-## Getting started
+- **DEM Operations**: GeoTIFF elevation models with automatic spatial reference extraction
+- **CSM Camera Models**: Image-to-ground transformations (C++ only)
+- **WebAssembly**: Zero-config browser/Node.js support with GDAL and PROJ
+- **Planetary Ready**: Mars, Moon, Earth coordinate systems work automatically
 
-To make it easy for you to get started with GitLab, here's a list of recommended next steps.
+## Quick Start
 
-Already a pro? Just edit this README.md and make it your own. Want to make it easy? [Use the template at the bottom](#editing-this-readme)!
+### C++ Build
 
-## Add your files
+```bash
+mamba env create -f environment.yml -n miniset
+mamba activate miniset
 
-* [Create](https://docs.gitlab.com/user/project/repository/web_editor/#create-a-file) or [upload](https://docs.gitlab.com/user/project/repository/web_editor/#upload-a-file) files
-* [Add files using the command line](https://docs.gitlab.com/topics/git/add_files/#add-files-to-a-git-repository) or push an existing Git repository with the following command:
-
+cd miniset
+mkdir build && cd build
+cmake ..
+make -j$(nproc)
+ctest
 ```
-cd existing_repo
-git remote add origin https://code.usgs.gov/astrogeology/miniset.git
-git branch -M main
-git push -uf origin main
+
+### WebAssembly Build
+
+```bash
+conda activate miniset  # with emscripten
+
+git submodule update --init --recursive
+mkdir build-wasm && cd build-wasm
+emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+emmake make miniset_wasm -j$(nproc)
+
+# Test
+cd ../tests/wasm
+./run_all_tests.js
 ```
-
-## Integrate with your tools
-
-* [Set up project integrations](https://code.usgs.gov/astrogeology/miniset/-/settings/integrations)
-
-## Collaborate with your team
-
-* [Invite team members and collaborators](https://docs.gitlab.com/user/project/members/)
-* [Create a new merge request](https://docs.gitlab.com/user/project/merge_requests/creating_merge_requests/)
-* [Automatically close issues from merge requests](https://docs.gitlab.com/user/project/issues/managing_issues/#closing-issues-automatically)
-* [Enable merge request approvals](https://docs.gitlab.com/user/project/merge_requests/approvals/)
-* [Set auto-merge](https://docs.gitlab.com/user/project/merge_requests/auto_merge/)
-
-## Test and Deploy
-
-Use the built-in continuous integration in GitLab.
-
-* [Get started with GitLab CI/CD](https://docs.gitlab.com/ci/quick_start/)
-* [Analyze your code for known vulnerabilities with Static Application Security Testing (SAST)](https://docs.gitlab.com/user/application_security/sast/)
-* [Deploy to Kubernetes, Amazon EC2, or Amazon ECS using Auto Deploy](https://docs.gitlab.com/topics/autodevops/requirements/)
-* [Use pull-based deployments for improved Kubernetes management](https://docs.gitlab.com/user/clusters/agent/)
-* [Set up protected environments](https://docs.gitlab.com/ci/environments/protected_environments/)
-
-***
-
-# Editing this README
-
-When you're ready to make this README your own, just edit this file and use the handy template below (or feel free to structure it however you want - this is just a starting point!). Thanks to [makeareadme.com](https://www.makeareadme.com/) for this template.
-
-## Suggestions for a good README
-
-Every project is different, so consider which of these sections apply to yours. The sections used in the template are suggestions for most open source projects. Also keep in mind that while a README can be too long and detailed, too long is better than too short. If you think your README is too long, consider utilizing another form of documentation rather than cutting out information.
-
-## Name
-Choose a self-explaining name for your project.
-
-## Description
-Let people know what your project can do specifically. Provide context and add a link to any reference visitors might be unfamiliar with. A list of Features or a Background subsection can also be added here. If there are alternatives to your project, this is a good place to list differentiating factors.
-
-## Badges
-On some READMEs, you may see small images that convey metadata, such as whether or not all the tests are passing for the project. You can use Shields to add some to your README. Many services also have instructions for adding a badge.
-
-## Visuals
-Depending on what you are making, it can be a good idea to include screenshots or even a video (you'll frequently see GIFs rather than actual videos). Tools like ttygif can help, but check out Asciinema for a more sophisticated method.
-
-## Installation
-Within a particular ecosystem, there may be a common way of installing things, such as using Yarn, NuGet, or Homebrew. However, consider the possibility that whoever is reading your README is a novice and would like more guidance. Listing specific steps helps remove ambiguity and gets people to using your project as quickly as possible. If it only runs in a specific context like a particular programming language version or operating system or has dependencies that have to be installed manually, also add a Requirements subsection.
 
 ## Usage
-Use examples liberally, and show the expected output if you can. It's helpful to have inline the smallest example of usage that you can demonstrate, while providing links to more sophisticated examples if they are too long to reasonably include in the README.
 
-## Support
-Tell people where they can go to for help. It can be any combination of an issue tracker, a chat room, an email address, etc.
+### C++ DEM Example
 
-## Roadmap
-If you have ideas for releases in the future, it is a good idea to list them in the README.
+```cpp
+#include "surface/dem.hpp"
 
-## Contributing
-State if you are open to contributions and what your requirements are for accepting them.
+// Load DEM (ellipsoid extracted automatically)
+surface::GdalDEM dem("terrain.tif", surface::DEMType::HEIGHT);
 
-For people who want to make changes to your project, it's helpful to have some documentation on how to get started. Perhaps there is a script that they should run or some environment variables that they need to set. Make these steps explicit. These instructions could also be useful to your future self.
+// Query elevation (lat/lon in degrees)
+double height = dem.getHeight(4.5, 137.4);
 
-You can also document commands to lint the code or run tests. These steps help to ensure high code quality and reduce the likelihood that the changes inadvertently break something. Having instructions for running tests is especially helpful if it requires external setup, such as starting a Selenium server for testing in a browser.
+std::cout << "Height: " << height << " m\n";
+std::cout << "Ellipsoid: " << dem.getSemiMajorA() << " m\n";
+```
 
-## Authors and acknowledgment
-Show your appreciation to those who have contributed to the project.
+### C++ Camera Example
 
-## License
-For open source projects, say how it is licensed.
+```cpp
+#include "csm/campt.hpp"
 
-## Project status
-If you have run out of energy or time for your project, put a note at the top of the README saying that development has slowed down or stopped completely. Someone may choose to fork your project or volunteer to step in as a maintainer or owner, allowing your project to keep going. You can also make an explicit request for maintainers.
+auto model = csm::createCsmFromISD("image.json");
+csm::CamptResult result = csm::campt(model.get(), 2500, 1000, 0);
+
+std::cout << "Lat: " << result.latitude << "°\n";
+std::cout << "Lon: " << result.longitude << "°\n";
+```
+
+### JavaScript/WASM DEM Example
+
+```javascript
+import MinisetFactory from './miniset.js';
+import fs from 'fs';
+
+const Module = await MinisetFactory();
+
+// Load DEM
+const data = fs.readFileSync('mars_dem.tif');
+Module.FS.writeFile('/tmp/dem.tif', data);
+
+const dem = new Module.GdalDEM('/tmp/dem.tif', Module.DEMType.HEIGHT);
+const height = dem.getHeight(-4.0, 222.5);  // lat/lon in degrees
+
+console.log('Height:', height, 'm');
+console.log('Ellipsoid:', dem.getSemiMajorA(), 'm');  // 3,396,190 for Mars
+
+dem.delete();
+```
+
+### Browser Example
+
+```html
+<script type="module">
+import MinisetFactory from './miniset.js';
+
+const Module = await MinisetFactory();
+
+const response = await fetch('dem.tif');
+const data = new Uint8Array(await response.arrayBuffer());
+Module.FS.writeFile('/tmp/dem.tif', data);
+
+const dem = new Module.GdalDEM('/tmp/dem.tif', Module.DEMType.HEIGHT);
+const height = dem.getHeight(5.73, 11.46);  // lat/lon in degrees
+console.log('Elevation:', height, 'm');
+dem.delete();
+</script>
+```
+
+### Cloud Optimized GeoTIFF
+
+```javascript
+// No download needed - access via HTTP
+const dem = new Module.GdalDEM(
+  '/vsicurl/https://example.com/data/mars_dem.tif',
+  Module.DEMType.HEIGHT
+);
+const height = dem.getHeight(latDeg, lonDeg);  // lat/lon in degrees
+dem.delete();
+```
+
+## API Reference
+
+### C++ DEM API
+
+```cpp
+surface::GdalDEM(filename, dem_type)
+  // dem_type: DEMType::HEIGHT or DEMType::RADIUS
+  // Ellipsoid auto-extracted from GeoTIFF
+
+dem.getHeight(lat_deg, lon_deg)    // Height above ellipsoid (m) - lat/lon in degrees
+dem.getRadius(lat_deg, lon_deg)    // Radius from center (m) - lat/lon in degrees
+dem.getSemiMajorA()                // Ellipsoid semi-major axis (m)
+dem.getSemiMajorB()                // Ellipsoid semi-major axis (m)
+dem.getSemiMinorC()                // Ellipsoid semi-minor axis (m)
+```
+
+### JavaScript DEM API
+
+```javascript
+const dem = new Module.GdalDEM(filepath, Module.DEMType.HEIGHT)
+  // Ellipsoid auto-extracted from GeoTIFF
+  // Supports /vsicurl/ paths for remote COGs
+
+dem.getHeight(lat_deg, lon_deg)    // Height above ellipsoid (m) - lat/lon in degrees
+dem.getRadius(lat_deg, lon_deg)    // Radius from center (m) - lat/lon in degrees
+dem.getSemiMajorA()                // Ellipsoid semi-major axis (m)
+dem.getSemiMajorB()                // Ellipsoid semi-major axis (m)
+dem.getSemiMinorC()                // Ellipsoid semi-minor axis (m)
+dem.delete()                       // Free memory (required)
+```
+
+**Note:** All lat/lon inputs are in degrees. Internal conversions to radians happen automatically.
+
+### C++ Camera API
+
+```cpp
+csm::createCsmFromISD(filename)           // Load CSM model
+csm::campt(model, sample, line, height)   // Camera point
+csm::imageToGround(model, line, sample, height)  // Image→ground
+csm::groundToImage(model, x, y, z)        // Ground→image
+```
+
+**Note:** CSM functions not exposed in WASM. Uncomment lines 463-476 in `src/wasm/miniset_bindings.cpp` to enable.
+
+## Testing
+
+```bash
+# C++ tests
+cd build
+ctest --output-on-failure
+
+# WASM tests
+cd tests/wasm
+./run_all_tests.js
+
+# Individual WASM tests
+node test_api.js     # API structure
+node test_dem.js     # DEM operations
+node test_csm.js     # CSM (currently skipped)
+```
+
+See [tests/wasm/README_TESTS.md](tests/wasm/README_TESTS.md) for details.
+
+## Dependencies
+
+**Required:**
+- C++17 compiler
+- CMake 3.15+
+- CSMAPI, USGSCSM
+
+**Optional:**
+- GDAL 3.8+ (DEM support)
+- PROJ 9.4+ (coordinate transforms)
+- OpenMP (parallelization)
+
+**WASM:**
+- Emscripten 3.1+
+- PROJ and GDAL built automatically from submodules
+
+## Build Details
+
+**Native:**
+```bash
+cmake .. -DCMAKE_BUILD_TYPE=Release
+make -j$(nproc)
+```
+
+**WASM:**
+```bash
+# First build: 10-20 min (builds PROJ + GDAL)
+# Subsequent: ~30 sec
+emcmake cmake .. -DCMAKE_BUILD_TYPE=Release
+emmake make miniset_wasm -j$(nproc)
+
+# Output: miniset.js (162 KB) + miniset.wasm (15 MB / 4.9 MB gzipped)
+```
+
+## Planetary Ellipsoids
+
+Automatically extracted from GeoTIFF metadata:
+
+| Body  | Semi-major (m) | Semi-minor (m) |
+|-------|----------------|----------------|
+| Mars  | 3,396,190      | 3,376,200      |
+| Moon  | 1,737,400      | 1,737,400      |
+| Earth | 6,378,137      | 6,356,752      |
+
+## References
+
+- [GDAL](https://gdal.org/) - Geospatial Data Abstraction Library
+- [PROJ](https://proj.org/) - Coordinate transformation
+- [CSM API](https://github.com/sminster/csm) - Community Sensor Model
+- [USGSCSM](https://github.com/DOI-USGS/usgscsm) - USGS CSM implementation
+
+---
+
+*Last Updated: 2026-05-19*
