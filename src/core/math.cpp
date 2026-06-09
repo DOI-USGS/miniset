@@ -1,3 +1,21 @@
+/*
+ * Copyright (C) 2024 USGS Astrogeology Science Center
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+
 #include "core/math.hpp"
 #include <cmath>
 #include <algorithm>
@@ -79,11 +97,9 @@ LatLon radiansToDegrees(const LatLon& radian_lat_lon) {
     double lon_deg = radian_lat_lon.lon * rad_to_deg;
 
     // Normalize longitude to [0, 360)
-    while (lon_deg < 0.0) {
+    lon_deg = std::fmod(lon_deg, 360.0);
+    if (lon_deg < 0.0) {
         lon_deg += 360.0;
-    }
-    while (lon_deg >= 360.0) {
-        lon_deg -= 360.0;
     }
 
     return LatLon(radian_lat_lon.lat * rad_to_deg, lon_deg);

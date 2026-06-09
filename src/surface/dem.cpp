@@ -1,3 +1,21 @@
+/*
+ * Copyright (C) 2024 USGS Astrogeology Science Center
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published
+ * by the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>.
+ */
+
+
 #include "surface/dem.hpp"
 #include <cmath>
 #include <stdexcept>
@@ -65,8 +83,7 @@ GdalDEM::GdalDEM(const std::string& dem_file, DEMType dem_type)
     // Configure GDAL/PROJ after embedded files are loaded (lazy initialization)
     configure_gdal_proj();
 
-    // Enable GDAL error logging
-    CPLSetConfigOption("CPL_DEBUG", "ON");
+    // GDAL error logging can be enabled by setting CPL_DEBUG environment variable
     EM_ASM({ console.log('Opening GDAL file: ' + UTF8ToString($0)); }, dem_file.c_str());
 #else
     GDALAllRegister();
@@ -217,54 +234,6 @@ void GdalDEM::setEllipsoid(double semi_major, double semi_minor) {
 #ifdef __EMSCRIPTEN__
     EM_ASM({ console.log('[WASM] Ellipsoid set: a=' + $0 + ', c=' + $1); }, semi_major, semi_minor);
 #endif
-}
-
-double GdalDEM::extractSemiMajor(const std::string& dem_file) {
-    // This method is no longer used but kept for API compatibility
-    GDALAllRegister();
-    GDALDataset* temp_ds = (GDALDataset*)GDALOpen(dem_file.c_str(), GA_ReadOnly);
-
-    if (!temp_ds) {
-        return 6378137.0;  // Return default instead of throwing
-    }
-
-    const OGRSpatialReference* srs = temp_ds->GetSpatialRef();
-    double semi_major = 6378137.0;  // Default to WGS84
-
-    if (srs) {
-        OGRErr err;
-        semi_major = srs->GetSemiMajor(&err);
-        if (err != OGRERR_NONE) {
-            semi_major = 6378137.0;  // Fallback to WGS84
-        }
-    }
-
-    GDALClose(temp_ds);
-    return semi_major;
-}
-
-double GdalDEM::extractSemiMinor(const std::string& dem_file) {
-    // This method is no longer used but kept for API compatibility
-    GDALAllRegister();
-    GDALDataset* temp_ds = (GDALDataset*)GDALOpen(dem_file.c_str(), GA_ReadOnly);
-
-    if (!temp_ds) {
-        return 6356752.314245;  // Return default instead of throwing
-    }
-
-    const OGRSpatialReference* srs = temp_ds->GetSpatialRef();
-    double semi_minor = 6356752.314245;  // Default to WGS84
-
-    if (srs) {
-        OGRErr err;
-        semi_minor = srs->GetSemiMinor(&err);
-        if (err != OGRERR_NONE) {
-            semi_minor = 6356752.314245;  // Fallback to WGS84
-        }
-    }
-
-    GDALClose(temp_ds);
-    return semi_minor;
 }
 
 GdalDEM::~GdalDEM() {

@@ -182,9 +182,9 @@ if(EMSCRIPTEN)
         target_compile_definitions(miniset_wasm PUBLIC MINISET_HAS_USGSCSM)
 
         # Link GDAL and PROJ (built by BuildWasmDependencies.cmake)
-        if(GDAL_FOUND)
-            # Add dependency on external projects
-            add_dependencies(miniset_wasm gdal_external proj_external)
+        if(GDAL_FOUND AND PROJ_FOUND)
+            # Add dependencies on all external projects
+            add_dependencies(miniset_wasm gdal_external proj_external sqlite_external)
 
             target_link_libraries(miniset_wasm PUBLIC
                 -Wl,--whole-archive
@@ -197,11 +197,10 @@ if(EMSCRIPTEN)
         endif()
 
         if(PROJ_FOUND)
-            # Add dependency on external projects (including custom SQLite)
-            add_dependencies(miniset_wasm proj_external sqlite_external)
-
-            # Note: PROJ is already bundled inside USGSCSM (linked with --whole-archive above)
-            # Only link SQLite separately to avoid duplicate symbols
+            # WASM PROJ Linking Strategy:
+            # PROJ is bundled inside USGSCSM via --whole-archive (line 181).
+            # Linking PROJ separately causes duplicate symbol errors (e.g., proj_context_delete_cpp_context).
+            # We only link SQLite separately since PROJ depends on it for datum transformations.
             target_link_libraries(miniset_wasm PUBLIC
                 # ${PROJ_LIBRARY}  # DO NOT LINK - already in USGSCSM
                 ${WASM_DEPS_INSTALL_DIR}/sqlite/lib/libsqlite3.a  # Custom SQLite with SQLITE_THREADSAFE=0

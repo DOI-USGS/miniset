@@ -217,16 +217,6 @@ emmake make miniset_wasm -j$(nproc)
 # Output: miniset.js (162 KB) + miniset.wasm (15 MB / 4.9 MB gzipped)
 ```
 
-## Planetary Ellipsoids
-
-Automatically extracted from GeoTIFF metadata:
-
-| Body  | Semi-major (m) | Semi-minor (m) |
-|-------|----------------|----------------|
-| Mars  | 3,396,190      | 3,376,200      |
-| Moon  | 1,737,400      | 1,737,400      |
-| Earth | 6,378,137      | 6,356,752      |
-
 ## References
 
 - [GDAL](https://gdal.org/) - Geospatial Data Abstraction Library
@@ -236,4 +226,4 @@ Automatically extracted from GeoTIFF metadata:
 
 ---
 
-*Last Updated: 2026-05-19*
+*Last Updated: 2026-06-09*
