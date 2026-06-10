@@ -8,7 +8,7 @@ import MinisetFactory from '../../build-wasm/miniset.js';
 import fs from 'fs';
 import path from 'path';
 
-const TEST_DIR = '/Users/krodriguez/work/cubes';
+const TEST_DIR = 'cubes';
 const IMAGE_FILE = 'W02_089524_2073_XN_27N269W.tiff';
 const ISD_FILE = 'W02_089524_2073_XN_27N269W.json';
 const OUTPUT_FILE = '/tmp/mroctx_projected_wasm.tif';
