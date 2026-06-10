@@ -11,15 +11,15 @@
       "licenses": [
         {
           "name": "AGPL-3.0-or-later",
-          "URL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/LICENSE"
+          "URL": "https://github.com/DOI-USGS/miniset/raw/main/LICENSE.md"
         }
       ]
     },
 
-    "homepageURL": "https://code.usgs.gov/astrogeology/miniset",
-    "downloadURL": "https://code.usgs.gov/astrogeology/miniset/-/archive/main/miniset-main.zip",
-    "disclaimerURL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/DISCLAIMER.md",
-    "repositoryURL": "https://code.usgs.gov/astrogeology/miniset.git",
+    "homepageURL": "https://github.com/DOI-USGS/miniset",
+    "downloadURL": "https://github.com/DOI-USGS/miniset/archive/refs/heads/main.zip",
+    "disclaimerURL": "https://github.com/DOI-USGS/miniset/raw/main/DISCLAIMER.md",
+    "repositoryURL": "https://github.com/DOI-USGS/miniset.git",
     "vcs": "git",
 
     "laborHours": 0,
@@ -46,7 +46,7 @@
     },
 
     "date": {
-      "metadataLastUpdated": "2024-06-09"
+      "metadataLastUpdated": "2026-06-10"
     }
   }
 ]
