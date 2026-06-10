@@ -6,13 +6,10 @@ dependencies:
   - cmake>=3.15
   - make
   - cxx-compiler
-  - clang_osx-arm64  
-  - clangxx_osx-arm64
   - csmapi>=1.0
   - usgscsm>=2.0
-  - gdal>=3.0
-  - proj>=6.0
-  - ceres-solver>=2.0
+  - gdal>=3.8,<4
+  - proj>=9,<10
   - eigen>=3.3
   - suitesparse
   - gtest>=1.10
@@ -21,4 +18,3 @@ dependencies:
   - pkg-config
   - ninja  
   - doxygen
-  - spqlite3
