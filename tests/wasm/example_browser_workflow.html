@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Miniset WASM + proj4js Example</title>
+    <script src="https://cdn.jsdelivr.net/npm/proj4@2.9.0/dist/proj4.js"></script>
+</head>
+<body>
+    <h1>Miniset WASM + proj4js Browser Example</h1>
+    <p>This example demonstrates the recommended workflow for spatial reference extraction in the browser.</p>
+
+    <h2>Workflow:</h2>
+    <ol>
+        <li>Load DEM file (user upload or fetch from server)</li>
+        <li>Extract WKT string from file metadata (server-side or pre-extracted)</li>
+        <li>Parse WKT with proj4js (pure JavaScript, runs in browser)</li>
+        <li>Create DEM with explicit ellipsoid parameters</li>
+        <li>Query elevations with correct planetary ellipsoid</li>
+    </ol>
+
+    <div id="output"></div>
+
+    <script type="module">
+        // Import Miniset WASM module
+        import MinisetFactory from './miniset.js';
+
+        async function main() {
+            const output = document.getElementById('output');
+
+            function log(msg) {
+                const p = document.createElement('p');
+                p.textContent = msg;
+                output.appendChild(p);
+            }
+
+            try {
+                log('Initializing Miniset WASM module...');
+                const Module = await MinisetFactory();
+                log('✓ Module loaded');
+
+                // Example: Mars DEM WKT (extracted server-side using gdalsrsinfo -o wkt1)
+                // In real application, this would come from:
+                // - Server API that extracts WKT using native GDAL
+                // - Pre-extracted metadata stored alongside DEM
+                // - User-provided spatial reference string
+                const marsWKT = `PROJCS["Mars (2015) - Sphere / Ocentric / Equirectangular, clon = 0",
+                    GEOGCS["Mars (2015) - Sphere / Ocentric",
+                        DATUM["Mars (2015) - Sphere",
+                            SPHEROID["Mars (2015) - Sphere",3396190,0,
+                                AUTHORITY["IAU","49900"]],
+                            AUTHORITY["IAU","49900"]],
+                        PRIMEM["Reference Meridian",0,
+                            AUTHORITY["IAU","49900"]],
+                        UNIT["degree",0.0174532925199433,
+                            AUTHORITY["EPSG","9122"]],
+                        AUTHORITY["IAU","49900"]],
+                    PROJECTION["Equirectangular"],
+                    PARAMETER["standard_parallel_1",0],
+                    PARAMETER["central_meridian",0],
+                    PARAMETER["false_easting",0],
+                    PARAMETER["false_northing",0],
+                    UNIT["metre",1,
+                        AUTHORITY["EPSG","9001"]],
+                    AXIS["Easting",EAST],
+                    AXIS["Northing",NORTH],
+                    AUTHORITY["IAU","49910"]]`;
+
+                log('\nParsing WKT with proj4js...');
+                const crs = proj4(marsWKT);
+
+                const semiMajor = crs.oProj.a;
+                const semiMinor = crs.oProj.b;
+                log(`✓ Ellipsoid: a=${semiMajor} m, b=${semiMinor} m`);
+
+                // Example: Load DEM from server or user upload
+                log('\nLoading DEM file...');
+                const response = await fetch('/path/to/mars_dem.tif');
+                const buffer = await response.arrayBuffer();
+                const data = new Uint8Array(buffer);
+
+                Module.FS.writeFile('/tmp/dem.tif', data);
+                log('✓ DEM loaded into WASM filesystem');
+
+                // Create DEM with explicit ellipsoid parameters
+                log('\nCreating DEM with Mars ellipsoid...');
+                const dem = new Module.GdalDEM('/tmp/dem.tif', Module.DEMType.HEIGHT, semiMajor, semiMinor);
+                log('✓ DEM created');
+
+                // Query elevation
+                const lat = -0.083;  // radians
+                const lon = 2.393;   // radians
+                const height = dem.getHeight(lat, lon);
+                log(`\n✓ Height at (${lat}, ${lon}): ${height.toFixed(2)} m`);
+
+                // Cleanup
+                dem.delete();
+                Module.FS.unlink('/tmp/dem.tif');
+                log('\n✓ All operations complete!');
+
+            } catch (error) {
+                log(`✗ Error: ${error.message}`);
+                console.error(error);
+            }
+        }
+
+        main();
+    </script>
+
+    <h2>Alternative: Using setEllipsoid()</h2>
+    <pre><code>
+// Create DEM with default ellipsoid
+const dem = new Module.GdalDEM('/tmp/dem.tif', Module.DEMType.HEIGHT);
+
+// Later, set the correct ellipsoid
+dem.setEllipsoid(semiMajor, semiMinor);
+    </code></pre>
+
+    <h2>Server-side WKT Extraction (Node.js)</h2>
+    <pre><code>
+// Extract WKT using native GDAL (runs on server)
+import { execSync } from 'child_process';
+
+function extractWKT(demPath) {
+    const output = execSync(`gdalsrsinfo -o wkt1 "${demPath}"`, { encoding: 'utf8' });
+    const wktMatch = output.match(/(PROJCS|GEOGCS)\[[\s\S]*\]/);
+    return wktMatch ? wktMatch[0] : null;
+}
+
+// Send WKT to browser along with DEM file
+const wkt = extractWKT('mars_dem.tif');
+    </code></pre>
+
+    <h2>Why This Approach?</h2>
+    <ul>
+        <li><strong>Browser Compatible:</strong> proj4js is pure JavaScript, no C++ exceptions</li>
+        <li><strong>Planetary Support:</strong> Works with Mars, Moon, and other planetary bodies</li>
+        <li><strong>Clean Separation:</strong> Spatial reference parsing in JavaScript, raster operations in WASM</li>
+        <li><strong>No Database:</strong> Avoids PROJ database access that causes C++ exceptions in WASM</li>
+    </ul>
+</body>
+</html>

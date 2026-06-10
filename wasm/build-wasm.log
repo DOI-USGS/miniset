@@ -1,0 +1,10 @@
+cd build/src/tiff-4.7.0; \
+	mkdir -p build; \
+	cd build; \
+	emcmake cmake .. "-DCMAKE_INSTALL_PREFIX=/Users/krodriguez/repos/knoten/miniset/wasm/build/install" \
+		-DCMAKE_BUILD_TYPE=Release \
+		-DBUILD_SHARED_LIBS=OFF \
+		-DZLIB_INCLUDE_DIR=/Users/krodriguez/repos/knoten/miniset/wasm/build/install/include \
+		-DZLIB_LIBRARY=/Users/krodriguez/repos/knoten/miniset/wasm/build/install/lib/libz.a
+/bin/sh: emcmake: command not found
+make: *** [build/src/tiff-4.7.0/build/Makefile] Error 127

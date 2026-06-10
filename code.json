@@ -1,0 +1,52 @@
+[
+  {
+    "name": "Miniset",
+    "organization": "U.S. Geological Survey",
+    "description": "High-performance geospatial sensor modeling library with WebAssembly support for planetary science. Provides DEM operations, CSM camera models, and coordinate transformations for Mars, Moon, and Earth.",
+    "version": "0.1.0",
+    "status": "Development",
+
+    "permissions": {
+      "usageType": "openSource",
+      "licenses": [
+        {
+          "name": "AGPL-3.0-or-later",
+          "URL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/LICENSE"
+        }
+      ]
+    },
+
+    "homepageURL": "https://code.usgs.gov/astrogeology/miniset",
+    "downloadURL": "https://code.usgs.gov/astrogeology/miniset/-/archive/main/miniset-main.zip",
+    "disclaimerURL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/DISCLAIMER.md",
+    "repositoryURL": "https://code.usgs.gov/astrogeology/miniset.git",
+    "vcs": "git",
+
+    "laborHours": 0,
+
+    "tags": [
+      "Planetary",
+      "Geospatial",
+      "Camera Models",
+      "DEM",
+      "WebAssembly",
+      "Sensor Modeling",
+      "Coordinate Transforms"
+    ],
+
+    "languages": [
+      "C++",
+      "JavaScript",
+      "CMake"
+    ],
+
+    "contact": {
+      "name": "Kelvin Rodriguez",
+      "email": "krodriguez@usgs.gov"
+    },
+
+    "date": {
+      "metadataLastUpdated": "2024-06-09"
+    }
+  }
+]
