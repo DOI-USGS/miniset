@@ -47,23 +47,6 @@
 
     "date": {
       "metadataLastUpdated": "2024-06-09"
-    },
-
-    "releases": [
-      {
-        "version": "main",
-        "repositoryURL": "https://code.usgs.gov/astrogeology/miniset.git",
-        "permissions": {
-          "licenses": [
-            {
-              "name": "AGPL-3.0-or-later",
-              "URL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/LICENSE.md"
-            }
-          ]
-        },
-        "downloadURL": "https://code.usgs.gov/astrogeology/miniset/-/archive/main/miniset-main.zip",
-        "disclaimerURL": "https://code.usgs.gov/astrogeology/miniset/-/raw/main/DISCLAIMER.md"
-      }
-    ]
+    }
   }
 ]
