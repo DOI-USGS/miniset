@@ -1,0 +1,125 @@
+name: Deploy docs to GitHub Pages
+
+# Builds the MkDocs (Material) site and deploys it to GitHub Pages. The docs'
+# in-browser playground + hero globe need the miniset WebAssembly module
+# (miniset.js/.wasm), which is NOT committed and is built from source here:
+# emscripten builds libcsmapi (from the usgscsm submodule), then miniset_wasm,
+# which in turn builds PROJ/GDAL/SQLite as ExternalProjects. The freshly built
+# module is copied into docs/docs/assets/wasm/ before `mkdocs build`.
+
+on:
+  push:
+    branches: [main]
+    # Rebuild only when something that affects the site changes.
+    paths:
+      - "docs/**"
+      - "src/**"
+      - "include/**"
+      - "cmake/**"
+      - "external/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch: {}
+
+# One in-flight docs publish at a time; newer pushes supersede older runs.
+concurrency:
+  group: docs
+  cancel-in-progress: true
+
+# We publish by pushing the built site to the `docs` branch, so the job needs
+# write access to repository contents (GitHub Pages is configured to deploy
+# from that branch). No pages/id-token permissions are needed for this method.
+permissions:
+  contents: write
+
+env:
+  EM_VERSION: 3.1.58          # match the emscripten used for local builds
+  BUILD_DIR: build-wasm-ci
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          # gdal, PROJ, usgscsm (csmapi) and StarDS are all needed to build the
+          # WASM module; recurse so nested submodules come too.
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install docs toolchain
+        run: pip install -r docs/requirements.txt
+
+      # Emscripten SDK, cached. Provides em++/emcmake/emmake + a bundled node.
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: ${{ env.EM_VERSION }}
+          actions-cache-folder: emsdk-cache-${{ env.EM_VERSION }}
+
+      # Cache the heavy ExternalProject builds (PROJ/GDAL/SQLite) + CMake state so
+      # only the first run pays the full multi-minute WASM dependency build.
+      - name: Cache WASM build tree
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.BUILD_DIR }}
+          key: wasm-${{ env.EM_VERSION }}-${{ hashFiles('cmake/BuildWasmDependencies.cmake', 'CMakeLists.txt', '.gitmodules') }}
+          restore-keys: |
+            wasm-${{ env.EM_VERSION }}-
+
+      # Build the CSM API for WebAssembly from the usgscsm submodule and stage it
+      # in the layout FindCSMAPI.cmake expects: <root>/libcsmapi.a + <root>/csm/*.h.
+      # CSMAPI_WASM_ROOT points the finder at it (no hardcoded local path).
+      - name: Build csmapi (WASM)
+        run: |
+          set -euo pipefail
+          emcmake cmake -S external/usgscsm/csm -B build-csmapi-ci \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build-csmapi-ci -j"$(nproc)"
+          # Stage: the .a, plus headers under a csm/ subdir (finder wants csm/csm.h).
+          mkdir -p wasm-csmapi/csm
+          cp build-csmapi-ci/libcsmapi.a wasm-csmapi/
+          cp external/usgscsm/csm/*.h wasm-csmapi/csm/
+          echo "CSMAPI_WASM_ROOT=$GITHUB_WORKSPACE/wasm-csmapi" >> "$GITHUB_ENV"
+
+      - name: Configure miniset_wasm
+        run: |
+          set -euo pipefail
+          emcmake cmake -S . -B "$BUILD_DIR" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMINISET_BUILD_TESTS=OFF \
+            -DCSMAPI_WASM_ROOT="$CSMAPI_WASM_ROOT"
+
+      - name: Build miniset_wasm (also builds PROJ/GDAL/SQLite)
+        run: cmake --build "$BUILD_DIR" --target miniset_wasm -j"$(nproc)"
+
+      - name: Stage the WASM module into the docs assets
+        run: |
+          set -euo pipefail
+          install -Dm644 "$BUILD_DIR/miniset.js"   docs/docs/assets/wasm/miniset.js
+          install -Dm644 "$BUILD_DIR/miniset.wasm" docs/docs/assets/wasm/miniset.wasm
+          ls -la docs/docs/assets/wasm/
+
+      - name: Build the site
+        working-directory: docs
+        run: mkdocs build --strict --site-dir site
+
+      # Publish the built site to the `docs` branch. GitHub Pages is configured
+      # to deploy from that branch's root, so this push is the deploy. `.nojekyll`
+      # stops Pages from running the output through Jekyll (which would drop the
+      # underscore-prefixed asset dirs mkdocs emits). force_orphan keeps the
+      # branch a single flat commit of the current site (no build history).
+      - name: Publish to docs branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/site
+          publish_branch: docs
+          force_orphan: true
+          enable_jekyll: false
