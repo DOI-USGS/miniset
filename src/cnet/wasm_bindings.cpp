@@ -301,6 +301,103 @@ val pointsReadXYZ_JS(uintptr_t h, int start, int count) {
 
 void closePointsXYZ_JS(uintptr_t h) { delete reinterpret_cast<cnet::HeroPointsReader*>(h); }
 
+// --- Gaussian-splat LOD summary reader (StarDS "summary" layer) -------------
+// Opens a cnet/3 net by URL and reads its splat overview (the "summary" layer),
+// for the level-of-detail render: a client shows ~K translucent ellipsoids as
+// the coarse view, then drills down into a splat's [rangeStart, rangeCount)
+// point window with openPointsXYZ/pointsReadXYZ on the SAME url. The heavy
+// lifting is in cnet::SummaryReader (src/cnet/stards_io.cpp) — the sole TU that
+// includes stards.h — so this binding just marshals to/from JS.
+uintptr_t openSummary_JS(std::string url) {
+    auto* r = new cnet::SummaryReader(cnet::SummaryReader::open(url));
+    return reinterpret_cast<uintptr_t>(r);
+}
+
+int summaryCount_JS(uintptr_t h) {
+    return static_cast<int>(reinterpret_cast<cnet::SummaryReader*>(h)->count());
+}
+
+// Return all splats as one object of typed arrays (size K each):
+//   { muX,muY,muZ, s0..s5 : Float64Array;  weight,rangeStart,rangeCount : Uint32Array }
+// muX/Y/Z are BCBF metres; s0..s5 the covariance upper triangle (xx,xy,xz,yy,yz,zz);
+// rangeStart/rangeCount index the net's point arrays for drill-down.
+val summaryReadSplats_JS(uintptr_t h) {
+    const cnet::GaussianSummary& s = reinterpret_cast<cnet::SummaryReader*>(h)->splats();
+    val out = val::object();
+    auto f64 = [](const std::vector<double>& v) {
+        val a = val::global("Float64Array").new_(val(v.size()));
+        if (!v.empty()) a.call<void>("set", val(emscripten::typed_memory_view(v.size(), v.data())));
+        return a;
+    };
+    auto u32 = [](const std::vector<uint32_t>& v) {
+        val a = val::global("Uint32Array").new_(val(v.size()));
+        if (!v.empty()) a.call<void>("set", val(emscripten::typed_memory_view(v.size(), v.data())));
+        return a;
+    };
+    out.set("muX", f64(s.muX)); out.set("muY", f64(s.muY)); out.set("muZ", f64(s.muZ));
+    out.set("s0", f64(s.s0)); out.set("s1", f64(s.s1)); out.set("s2", f64(s.s2));
+    out.set("s3", f64(s.s3)); out.set("s4", f64(s.s4)); out.set("s5", f64(s.s5));
+    out.set("weight", u32(s.weight));
+    out.set("rangeStart", u32(s.rangeStart));
+    out.set("rangeCount", u32(s.rangeCount));
+    out.set("count", static_cast<double>(s.size()));
+    return out;
+}
+
+void closeSummary_JS(uintptr_t h) { delete reinterpret_cast<cnet::SummaryReader*>(h); }
+
+// --- Polyline LOD reader (StarDS "lines" layer) -----------------------------
+// Opens a cnet/3 net by URL and reads its polyline overview: geometric filaments
+// stored as compact on-ellipsoid (lon,lat), dequantized here to BCBF XYZ. The
+// client renders polylines immediately (ribbons), then drills a line's
+// [rangeStart,rangeCount) point window with openPointsXYZ/pointsReadXYZ on the
+// same URL. cnet::LinesReader (src/cnet/stards_io.cpp) does the StarDS work.
+uintptr_t openLines_JS(std::string url) {
+    auto* r = new cnet::LinesReader(cnet::LinesReader::open(url));
+    return reinterpret_cast<uintptr_t>(r);
+}
+int linesCount_JS(uintptr_t h) {
+    return static_cast<int>(reinterpret_cast<cnet::LinesReader*>(h)->count());
+}
+
+// Return the whole polyline model in one object (small — read whole):
+//   { positions: Float32Array(V*3)  // dequantized BCBF vertices, all lines
+//     voff:      Uint32Array(L+1)    // vertex CSR: line i = [voff[i],voff[i+1])
+//     rangeStart,rangeCount: Uint32Array(L)   // point windows for drill-down
+//     count: L }
+val linesReadAll_JS(uintptr_t h) {
+    auto* r = reinterpret_cast<cnet::LinesReader*>(h);
+    const size_t L = r->count();
+    val out = val::object();
+
+    const std::vector<float>& xyz = r->verticesXYZ();
+    val f32 = val::global("Float32Array").new_(val(xyz.size()));
+    if (!xyz.empty())
+        f32.call<void>("set", val(emscripten::typed_memory_view(xyz.size(), xyz.data())));
+    out.set("positions", f32);
+
+    // Build voff (L+1) and rangeStart/rangeCount (L) from the reader.
+    std::vector<uint32_t> voff(L + 1, 0), rs(L, 0), rc(L, 0);
+    for (size_t i = 0; i < L; ++i) {
+        uint32_t fv, n; r->lineRange(i, fv, n);
+        voff[i] = fv; voff[i + 1] = fv + n;
+        uint32_t s, c; r->linePointRange(i, s, c);
+        rs[i] = s; rc[i] = c;
+    }
+    auto u32 = [](const std::vector<uint32_t>& v) {
+        val a = val::global("Uint32Array").new_(val(v.size()));
+        if (!v.empty()) a.call<void>("set", val(emscripten::typed_memory_view(v.size(), v.data())));
+        return a;
+    };
+    out.set("voff", u32(voff));
+    out.set("rangeStart", u32(rs));
+    out.set("rangeCount", u32(rc));
+    out.set("count", static_cast<double>(L));
+    return out;
+}
+
+void closeLines_JS(uintptr_t h) { delete reinterpret_cast<cnet::LinesReader*>(h); }
+
 EMSCRIPTEN_BINDINGS(miniset_cnet) {
     emscripten::function("readNetProtobuf", &readNetProtobuf_JS);
     emscripten::function("readControlNetParquet", &readControlNetParquet_JS);
@@ -325,4 +422,14 @@ EMSCRIPTEN_BINDINGS(miniset_cnet) {
     emscripten::function("pointsCount", &pointsCount_JS);
     emscripten::function("pointsReadXYZ", &pointsReadXYZ_JS);
     emscripten::function("closePointsXYZ", &closePointsXYZ_JS);
+    // Gaussian-splat LOD summary reader (cnet/3 "summary" layer).
+    emscripten::function("openSummary", &openSummary_JS);
+    emscripten::function("summaryCount", &summaryCount_JS);
+    emscripten::function("summaryReadSplats", &summaryReadSplats_JS);
+    emscripten::function("closeSummary", &closeSummary_JS);
+    // Polyline LOD reader (cnet/3 "lines" layer).
+    emscripten::function("openLines", &openLines_JS);
+    emscripten::function("linesCount", &linesCount_JS);
+    emscripten::function("linesReadAll", &linesReadAll_JS);
+    emscripten::function("closeLines", &closeLines_JS);
 }

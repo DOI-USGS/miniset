@@ -25,6 +25,8 @@
 #include <unordered_map>
 #include <vector>
 
+#include "core/types.hpp"
+#include "utils/coordinate_transforms.hpp"
 #include "stards.h"
 
 namespace cnet {
@@ -669,5 +671,751 @@ size_t HeroPointsReader::readXYZ(size_t start, size_t n,
     outMaxRadius = std::sqrt(maxR2);
     return got;
 }
+
+// ===========================================================================
+// Gaussian-splat LOD summary ("cnet/3")
+// ===========================================================================
+//
+// A compact overview of the point cloud: the adjusted points are partitioned
+// into K contiguous runs (in existing point-array order — no reordering), and
+// each run is summarized by one anisotropic 3D Gaussian (mean + 3x3 covariance)
+// plus its point count and its [rangeStart, rangeCount) window. Because overlap
+// tracks are long thin ribbons, an anisotropic Gaussian captures a ribbon
+// segment with a single splat where a quadtree would need many cells. The range
+// back-pointers let a client drill down from a splat to its exact points with
+// one windowed get_slice read (HeroPointsReader::readXYZ / readPoints).
+
+namespace {
+
+// The StarDS layer + array/header keys for the summary. Keep in sync with the
+// SummaryReader below and the WASM readSummary bindings.
+constexpr const char* kSummaryLayer = "summary";
+constexpr const char* kSummaryMethodSegment = "segment";
+constexpr const char* kSummaryMethodTracks = "tracks";
+
+// Per-splat streaming accumulator. Covariance is accumulated about a per-splat
+// reference point (the first adjusted point in the run): at globe scale
+// (~3.4e6 m) the raw second moment E[x^2] ~ 1.2e13 dwarfs the variance (a ribbon
+// is ~1e3 m wide → var ~1e6), so accumulating x*x directly loses the variance in
+// float64 rounding. Subtracting a reference keeps the sums O(extent^2).
+struct SplatAccum {
+    double refx = 0, refy = 0, refz = 0;  // reference origin (first point)
+    bool haveRef = false;
+    uint64_t n = 0;                        // adjusted points accumulated
+    double sx = 0, sy = 0, sz = 0;         // Σ(x-ref)
+    // Σ(x-ref)(y-ref) upper triangle: xx,xy,xz,yy,yz,zz
+    double sxx = 0, sxy = 0, sxz = 0, syy = 0, syz = 0, szz = 0;
+
+    void add(double x, double y, double z) {
+        if (!haveRef) { refx = x; refy = y; refz = z; haveRef = true; }
+        double dx = x - refx, dy = y - refy, dz = z - refz;
+        sx += dx; sy += dy; sz += dz;
+        sxx += dx * dx; sxy += dx * dy; sxz += dx * dz;
+        syy += dy * dy; syz += dy * dz; szz += dz * dz;
+        ++n;
+    }
+};
+
+}  // namespace
+
+namespace {
+
+// Gather a column into a new vector following a point permutation `order`
+// (out[i] = col[order[i]]). Empty/short columns (optional fields not populated)
+// pass through unchanged so we never index out of range.
+template <typename T>
+std::vector<T> gatherPoints(const std::vector<T>& col, const std::vector<uint32_t>& order) {
+    if (col.size() != order.size()) return col;  // not a per-point column here
+    std::vector<T> out;
+    out.reserve(order.size());
+    for (uint32_t idx : order) out.push_back(col[idx]);
+    return out;
+}
+
+// Apply a point permutation `order` (out point i = net point order[i]) to a
+// whole net: gather every per-point column, move each point's measures with it
+// (block-contiguous), and rebuild all CSR offsets. The result equals `net` as a
+// SET of whole points; only order changes. `order` must be a permutation of
+// [0, numPoints). Shared by reorder_points_by_track and the line writer.
+ControlNet applyPointPermutation(const ControlNet& net, const std::vector<uint32_t>& order) {
+    const size_t nPts = net.numPoints();
+
+    // --- Gather every per-point column through `order`. --------------------
+    ControlNet out;
+    out.header = net.header;
+    out.pointId = gatherPoints(net.pointId, order);
+    out.pointType = gatherPoints(net.pointType, order);
+    out.chooserName = gatherPoints(net.chooserName, order);
+    out.datetime = gatherPoints(net.datetime, order);
+    out.editLock = gatherPoints(net.editLock, order);
+    out.hasEditLock = gatherPoints(net.hasEditLock, order);
+    out.ignore = gatherPoints(net.ignore, order);
+    out.hasIgnore = gatherPoints(net.hasIgnore, order);
+    out.jigsawRejected = gatherPoints(net.jigsawRejected, order);
+    out.hasJigsawRejected = gatherPoints(net.hasJigsawRejected, order);
+    out.referenceIndex = gatherPoints(net.referenceIndex, order);
+    out.hasReferenceIndex = gatherPoints(net.hasReferenceIndex, order);
+    out.aprioriSurfPointSource = gatherPoints(net.aprioriSurfPointSource, order);
+    out.aprioriSurfPointSourceFile = gatherPoints(net.aprioriSurfPointSourceFile, order);
+    out.aprioriRadiusSource = gatherPoints(net.aprioriRadiusSource, order);
+    out.aprioriRadiusSourceFile = gatherPoints(net.aprioriRadiusSourceFile, order);
+    out.aprioriX = gatherPoints(net.aprioriX, order);
+    out.aprioriY = gatherPoints(net.aprioriY, order);
+    out.aprioriZ = gatherPoints(net.aprioriZ, order);
+    out.hasApriori = gatherPoints(net.hasApriori, order);
+    out.adjustedX = gatherPoints(net.adjustedX, order);
+    out.adjustedY = gatherPoints(net.adjustedY, order);
+    out.adjustedZ = gatherPoints(net.adjustedZ, order);
+    out.hasAdjusted = gatherPoints(net.hasAdjusted, order);
+
+    // --- 3. Rebuild measures (block-contiguous per new point order) + CSRs. -
+    const bool haveApCovar = net.aprioriCovarOffset.size() == nPts + 1;
+    const bool haveAdCovar = net.adjustedCovarOffset.size() == nPts + 1;
+    const size_t nMeas = net.numMeasures();
+    const bool haveLog = net.measureLogOffset.size() == nMeas + 1;
+
+    out.measureStart.reserve(nPts);
+    out.measureCount.reserve(nPts);
+    if (haveApCovar) out.aprioriCovarOffset.reserve(nPts + 1);
+    if (haveAdCovar) out.adjustedCovarOffset.reserve(nPts + 1);
+    if (haveApCovar) out.aprioriCovarOffset.push_back(0);
+    if (haveAdCovar) out.adjustedCovarOffset.push_back(0);
+    if (haveLog) out.measureLogOffset.push_back(0);
+
+    // Helper to append one measure (by old index mi) to the output measure arrays.
+    auto appendMeasure = [&](size_t mi) {
+        auto pushIf = [&](auto& dst, const auto& src) {
+            if (mi < src.size()) dst.push_back(src[mi]);
+        };
+        pushIf(out.serialNumber, net.serialNumber);
+        pushIf(out.measureType, net.measureType);
+        pushIf(out.sample, net.sample); pushIf(out.hasSample, net.hasSample);
+        pushIf(out.line, net.line); pushIf(out.hasLine, net.hasLine);
+        pushIf(out.sampleResidual, net.sampleResidual); pushIf(out.hasSampleResidual, net.hasSampleResidual);
+        pushIf(out.lineResidual, net.lineResidual); pushIf(out.hasLineResidual, net.hasLineResidual);
+        pushIf(out.measureChooserName, net.measureChooserName);
+        pushIf(out.measureDatetime, net.measureDatetime);
+        pushIf(out.measureEditLock, net.measureEditLock); pushIf(out.hasMeasureEditLock, net.hasMeasureEditLock);
+        pushIf(out.measureIgnore, net.measureIgnore); pushIf(out.hasMeasureIgnore, net.hasMeasureIgnore);
+        pushIf(out.measureJigsawRejected, net.measureJigsawRejected); pushIf(out.hasMeasureJigsawRejected, net.hasMeasureJigsawRejected);
+        pushIf(out.diameter, net.diameter); pushIf(out.hasDiameter, net.hasDiameter);
+        pushIf(out.aprioriSample, net.aprioriSample); pushIf(out.hasAprioriSample, net.hasAprioriSample);
+        pushIf(out.aprioriLine, net.aprioriLine); pushIf(out.hasAprioriLine, net.hasAprioriLine);
+        pushIf(out.sampleSigma, net.sampleSigma); pushIf(out.hasSampleSigma, net.hasSampleSigma);
+        pushIf(out.lineSigma, net.lineSigma); pushIf(out.hasLineSigma, net.hasLineSigma);
+        // Per-measure log CSR: append this measure's [logOff[mi], logOff[mi+1]).
+        if (haveLog) {
+            uint32_t lb = net.measureLogOffset[mi], le = net.measureLogOffset[mi + 1];
+            for (uint32_t li = lb; li < le; ++li) {
+                if (li < net.measureLogType.size()) out.measureLogType.push_back(net.measureLogType[li]);
+                if (li < net.measureLogValue.size()) out.measureLogValue.push_back(net.measureLogValue[li]);
+            }
+            out.measureLogOffset.push_back(static_cast<uint32_t>(out.measureLogType.size()));
+        }
+    };
+
+    for (uint32_t oldP : order) {
+        out.measureStart.push_back(static_cast<uint32_t>(out.numMeasures()));
+        uint32_t s = net.measureStart[oldP], c = net.measureCount[oldP];
+        out.measureCount.push_back(c);
+        for (uint32_t m = 0; m < c; ++m) appendMeasure(static_cast<size_t>(s) + m);
+
+        // Point-level covariance CSR: copy this point's [off[oldP], off[oldP+1]).
+        if (haveApCovar) {
+            uint32_t b = net.aprioriCovarOffset[oldP], e = net.aprioriCovarOffset[oldP + 1];
+            for (uint32_t i = b; i < e; ++i)
+                if (i < net.aprioriCovar.size()) out.aprioriCovar.push_back(net.aprioriCovar[i]);
+            out.aprioriCovarOffset.push_back(static_cast<uint32_t>(out.aprioriCovar.size()));
+        }
+        if (haveAdCovar) {
+            uint32_t b = net.adjustedCovarOffset[oldP], e = net.adjustedCovarOffset[oldP + 1];
+            for (uint32_t i = b; i < e; ++i)
+                if (i < net.adjustedCovar.size()) out.adjustedCovar.push_back(net.adjustedCovar[i]);
+            out.adjustedCovarOffset.push_back(static_cast<uint32_t>(out.adjustedCovar.size()));
+        }
+    }
+    return out;
+}
+
+// Track key per point: sorted serial numbers of its measures joined with a unit
+// separator. Points observed in the same image set (same overlap) share a key.
+std::string trackKey(const ControlNet& net, size_t p) {
+    uint32_t s = net.measureStart[p], c = net.measureCount[p];
+    std::vector<const std::string*> sns;
+    sns.reserve(c);
+    for (uint32_t m = 0; m < c; ++m) {
+        size_t mi = static_cast<size_t>(s) + m;
+        if (mi < net.serialNumber.size()) sns.push_back(&net.serialNumber[mi]);
+    }
+    std::sort(sns.begin(), sns.end(),
+              [](const std::string* a, const std::string* b) { return *a < *b; });
+    std::string k;
+    for (const std::string* sn : sns) { k += *sn; k += '\x1f'; }
+    return k;
+}
+
+}  // namespace
+
+ControlNet reorder_points_by_track(const ControlNet& net) {
+    const size_t nPts = net.numPoints();
+    if (nPts == 0) return net;
+    std::vector<std::string> key(nPts);
+    for (size_t p = 0; p < nPts; ++p) key[p] = trackKey(net, p);
+    std::vector<uint32_t> order(nPts);
+    for (size_t i = 0; i < nPts; ++i) order[i] = static_cast<uint32_t>(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](uint32_t a, uint32_t b) { return key[a] < key[b]; });
+    return applyPointPermutation(net, order);
+}
+
+GaussianSummary fit_gaussian_summary(const ControlNet& net, size_t k) {
+    GaussianSummary out;
+    const size_t nPts = net.numPoints();
+    if (nPts == 0 || k == 0) return out;
+    if (k > nPts) k = nPts;
+
+    // Prefer adjusted (bundle-solved) coordinates; fall back to apriori when no
+    // point has an adjusted coordinate (apriori-only nets are common — e.g. a net
+    // that hasn't been bundle-adjusted yet). Whichever source is chosen, only
+    // points whose corresponding has* flag is set contribute to a splat's fit.
+    auto anySet = [&](const std::vector<double>& flag) {
+        for (double f : flag) if (f != 0.0) return true;
+        return false;
+    };
+    const bool adjOK = net.adjustedX.size() == nPts && net.adjustedY.size() == nPts &&
+                       net.adjustedZ.size() == nPts && anySet(net.hasAdjusted);
+    const bool aprOK = net.aprioriX.size() == nPts && net.aprioriY.size() == nPts &&
+                       net.aprioriZ.size() == nPts && anySet(net.hasApriori);
+    if (!adjOK && !aprOK) return out;  // no usable coordinates at all
+
+    const std::vector<double>& X = adjOK ? net.adjustedX : net.aprioriX;
+    const std::vector<double>& Y = adjOK ? net.adjustedY : net.aprioriY;
+    const std::vector<double>& Z = adjOK ? net.adjustedZ : net.aprioriZ;
+    const std::vector<double>& flag = adjOK ? net.hasAdjusted : net.hasApriori;
+    const bool haveFlag = flag.size() == nPts;
+
+    out.muX.reserve(k); out.muY.reserve(k); out.muZ.reserve(k);
+    out.s0.reserve(k); out.s1.reserve(k); out.s2.reserve(k);
+    out.s3.reserve(k); out.s4.reserve(k); out.s5.reserve(k);
+    out.weight.reserve(k); out.rangeStart.reserve(k); out.rangeCount.reserve(k);
+
+    // Partition the point index range [0, nPts) into k contiguous segments of
+    // ~equal SIZE (by point count, not by adjusted-point count). Each segment's
+    // range covers every point index in it — including un-adjusted points that
+    // don't contribute to the fit — so the ranges stay a contiguous partition of
+    // [0, nPts), which is what makes drill-down a single window.
+    for (size_t seg = 0; seg < k; ++seg) {
+        size_t begin = static_cast<size_t>((static_cast<double>(seg) * nPts) / k);
+        size_t end = static_cast<size_t>((static_cast<double>(seg + 1) * nPts) / k);
+        if (seg + 1 == k) end = nPts;   // last segment absorbs the remainder
+        if (end <= begin) continue;      // possible when k≈nPts and rounding collides
+
+        SplatAccum a;
+        for (size_t p = begin; p < end; ++p) {
+            if (haveFlag && flag[p] == 0.0) continue;  // skip points without this coord
+            a.add(X[p], Y[p], Z[p]);
+        }
+
+        double muX, muY, muZ, c0, c1, c2, c3, c4, c5;
+        if (a.n == 0) {
+            // A segment with no adjusted points: emit a degenerate zero-weight
+            // splat at the origin so the ranges still tile [0, nPts) exactly.
+            muX = muY = muZ = 0.0;
+            c0 = c1 = c2 = c3 = c4 = c5 = 0.0;
+        } else {
+            const double inv = 1.0 / static_cast<double>(a.n);
+            const double mx = a.sx * inv, my = a.sy * inv, mz = a.sz * inv;
+            muX = a.refx + mx; muY = a.refy + my; muZ = a.refz + mz;
+            // Cov = E[(x-ref)(y-ref)] - m*m  (population covariance about the mean).
+            c0 = a.sxx * inv - mx * mx;   // xx
+            c1 = a.sxy * inv - mx * my;   // xy
+            c2 = a.sxz * inv - mx * mz;   // xz
+            c3 = a.syy * inv - my * my;   // yy
+            c4 = a.syz * inv - my * mz;   // yz
+            c5 = a.szz * inv - mz * mz;   // zz
+            // Guard tiny negative diagonals from rounding.
+            if (c0 < 0) c0 = 0; if (c3 < 0) c3 = 0; if (c5 < 0) c5 = 0;
+        }
+
+        out.muX.push_back(muX); out.muY.push_back(muY); out.muZ.push_back(muZ);
+        out.s0.push_back(c0); out.s1.push_back(c1); out.s2.push_back(c2);
+        out.s3.push_back(c3); out.s4.push_back(c4); out.s5.push_back(c5);
+        out.weight.push_back(static_cast<uint32_t>(a.n));
+        out.rangeStart.push_back(static_cast<uint32_t>(begin));
+        out.rangeCount.push_back(static_cast<uint32_t>(end - begin));
+    }
+    return out;
+}
+
+namespace {
+
+// Write the summary into an open dataset as the "summary" layer + header stamps.
+void writeSummaryLayer(StarDataset& ds, const GaussianSummary& s,
+                       const char* method, bool reordered) {
+    auto layer = ds.create_layer(kSummaryLayer);
+    auto putD = [&](const char* key, const std::vector<double>& v) {
+        NDArray<double> arr({v.size()}, 0.0);
+        if (!v.empty()) std::copy(v.begin(), v.end(), arr.data().begin());
+        layer->put(key, std::move(arr));
+    };
+    auto putU = [&](const char* key, const std::vector<uint32_t>& v) {
+        NDArray<uint32_t> arr({v.size()}, 0u);
+        if (!v.empty()) std::copy(v.begin(), v.end(), arr.data().begin());
+        layer->put(key, std::move(arr));
+    };
+    putD("summary.muX", s.muX); putD("summary.muY", s.muY); putD("summary.muZ", s.muZ);
+    putD("summary.s0", s.s0); putD("summary.s1", s.s1); putD("summary.s2", s.s2);
+    putD("summary.s3", s.s3); putD("summary.s4", s.s4); putD("summary.s5", s.s5);
+    putU("summary.weight", s.weight);
+    putU("summary.rangeStart", s.rangeStart);
+    putU("summary.rangeCount", s.rangeCount);
+
+    // Base-layer header stamps (metadata block) marking this as cnet/3.
+    putStr(ds, "h.format", "cnet/3");
+    putStr(ds, "h.summaryCount", std::to_string(s.size()));
+    putStr(ds, "h.summaryMethod", method);
+    putStr(ds, "h.pointsReordered", reordered ? "1" : "0");
+}
+
+}  // namespace
+
+void write_control_net_stards_summarized(const ControlNet& net_in, const std::string& path,
+                                         size_t k, bool byTracks) {
+    // For "tracks" mode, reorder points so image-overlap tracks are contiguous;
+    // the STORED net is then the reordered one and the splat ranges index it. For
+    // "segment" mode the points keep their existing order. Bind `net` to whichever
+    // we actually write (avoids copying in the common segment path).
+    ControlNet reordered;
+    if (byTracks) reordered = reorder_points_by_track(net_in);
+    const ControlNet& net = byTracks ? reordered : net_in;
+
+    star::StarConfig cfg;
+    cfg.compression = star::CompressionAlgorithm::GZIP_SHUFFLE_BLOCK;
+    auto dsp = StarDataset::create(path, cfg);
+    StarDataset& ds = *dsp;
+
+    // Base layer: identical to write_control_net_stards (cnet/2 arrays), but with
+    // h.format overwritten to cnet/3 by writeSummaryLayer below.
+    putStr(ds, "h.networkId", net.header.networkId);
+    putStr(ds, "h.targetName", net.header.targetName);
+    putStr(ds, "h.created", net.header.created);
+    putStr(ds, "h.lastModified", net.header.lastModified);
+    putStr(ds, "h.description", net.header.description);
+    putStr(ds, "h.userName", net.header.userName);
+    putStr(ds, "h.format", "cnet/2");  // overwritten to cnet/3 by writeSummaryLayer
+
+#define X(kind, key, member) PUT_##kind(key, member);
+    CNET_POINT_COLUMNS(X)
+    CNET_MEASURE_COLUMNS(X)
+    CNET_CSR_COLUMNS(X)
+#undef X
+
+    GaussianSummary summary = fit_gaussian_summary(net, k);
+    writeSummaryLayer(ds, summary,
+                      byTracks ? kSummaryMethodTracks : kSummaryMethodSegment,
+                      byTracks);
+
+    dsp->close();
+}
+
+// ===========================================================================
+// Summary reader
+// ===========================================================================
+
+struct SummaryReader::Impl {
+    std::shared_ptr<StarDataset> ds;
+    GaussianSummary splats;
+};
+
+SummaryReader::SummaryReader() : impl_(std::make_unique<Impl>()) {}
+SummaryReader::~SummaryReader() = default;
+SummaryReader::SummaryReader(SummaryReader&&) noexcept = default;
+SummaryReader& SummaryReader::operator=(SummaryReader&&) noexcept = default;
+
+SummaryReader SummaryReader::open(const std::string& path) {
+    star::setNumThreads(1);  // WASM has no pthreads; harmless natively.
+    SummaryReader r;
+    Impl& im = *r.impl_;
+    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY);
+    if (!im.ds->has_layer(kSummaryLayer)) return r;  // no summary → count()==0
+
+    auto layer = im.ds->get_layer(kSummaryLayer);
+    // The layer arrays are small; read each whole. A missing array (older writer)
+    // leaves that vector empty, which the getters below tolerate.
+    auto getD = [&](const char* key) -> std::vector<double> {
+        try {
+            NDArray<double> a = layer->get<double>(key);
+            return std::vector<double>(a.data().begin(), a.data().end());
+        } catch (...) { return {}; }
+    };
+    auto getU = [&](const char* key) -> std::vector<uint32_t> {
+        try {
+            NDArray<uint32_t> a = layer->get<uint32_t>(key);
+            return std::vector<uint32_t>(a.data().begin(), a.data().end());
+        } catch (...) { return {}; }
+    };
+    GaussianSummary& s = im.splats;
+    s.muX = getD("summary.muX"); s.muY = getD("summary.muY"); s.muZ = getD("summary.muZ");
+    s.s0 = getD("summary.s0"); s.s1 = getD("summary.s1"); s.s2 = getD("summary.s2");
+    s.s3 = getD("summary.s3"); s.s4 = getD("summary.s4"); s.s5 = getD("summary.s5");
+    s.weight = getU("summary.weight");
+    s.rangeStart = getU("summary.rangeStart");
+    s.rangeCount = getU("summary.rangeCount");
+    return r;
+}
+
+size_t SummaryReader::count() const { return impl_->splats.size(); }
+const GaussianSummary& SummaryReader::splats() const { return impl_->splats; }
+
+// ===========================================================================
+// Polyline ("lines") LOD summary — the surface-parametric track model
+// ===========================================================================
+//
+// Filaments are traced geometrically in the adjusted point cloud (crossing image
+// boundaries freely), simplified to polylines, and stored as line-relative int16
+// (lon,lat) on the biaxial ellipsoid — compact, on-surface, faithful to track
+// shape. Points are reordered so each filament is a contiguous window, so the
+// per-line rangeStart/rangeCount drives real-point drill-down. See the prototype
+// notes in the design plan: ~92% coverage, ~4 MB, ~9 m resolution on a real net.
+
+namespace {
+
+constexpr const char* kLinesLayer = "lines";
+
+// --- voxel grid over BCBF XYZ for O(1)-ish neighbor queries ----------------
+// Cells packed into 63 bits (21 bits/axis, offset by 2^20). Cell size == the
+// neighbor search radius, so a point's neighbors lie in its 27-cell stencil.
+struct VoxelGrid {
+    double cell;
+    std::unordered_map<long long, std::vector<uint32_t>> cells;
+    static long long pack(long long cx, long long cy, long long cz) {
+        auto o = [](long long v) { return (unsigned long long)(v + 1048576); };
+        return (long long)((o(cx) & 0x1FFFFF) | ((o(cy) & 0x1FFFFF) << 21) | ((o(cz) & 0x1FFFFF) << 42));
+    }
+    void cellOf(double x, double y, double z, long long& cx, long long& cy, long long& cz) const {
+        cx = (long long)std::floor(x / cell);
+        cy = (long long)std::floor(y / cell);
+        cz = (long long)std::floor(z / cell);
+    }
+};
+
+// Perpendicular distance of point p to segment a-b (3D).
+double perpDist(const double* p, const double* a, const double* b) {
+    double ab[3] = {b[0]-a[0], b[1]-a[1], b[2]-a[2]};
+    double L2 = ab[0]*ab[0] + ab[1]*ab[1] + ab[2]*ab[2];
+    if (L2 <= 0) {
+        double d[3] = {p[0]-a[0], p[1]-a[1], p[2]-a[2]};
+        return std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+    }
+    double t = ((p[0]-a[0])*ab[0] + (p[1]-a[1])*ab[1] + (p[2]-a[2])*ab[2]) / L2;
+    if (t < 0) t = 0; if (t > 1) t = 1;
+    double c[3] = {a[0]+t*ab[0], a[1]+t*ab[1], a[2]+t*ab[2]};
+    double d[3] = {p[0]-c[0], p[1]-c[1], p[2]-c[2]};
+    return std::sqrt(d[0]*d[0]+d[1]*d[1]+d[2]*d[2]);
+}
+
+// Iterative 3D Douglas–Peucker; fills `keep` (1 = vertex retained).
+void douglasPeucker(const std::vector<std::array<double,3>>& pts, double eps,
+                    std::vector<char>& keep) {
+    size_t n = pts.size();
+    keep.assign(n, 0);
+    if (n == 0) return;
+    keep[0] = keep[n-1] = 1;
+    if (n < 3) return;
+    std::vector<std::pair<size_t,size_t>> st = {{0, n-1}};
+    while (!st.empty()) {
+        auto [a, b] = st.back(); st.pop_back();
+        if (b <= a + 1) continue;
+        double dmax = -1; size_t idx = a;
+        for (size_t i = a+1; i < b; ++i) {
+            double d = perpDist(pts[i].data(), pts[a].data(), pts[b].data());
+            if (d > dmax) { dmax = d; idx = i; }
+        }
+        if (dmax > eps) { keep[idx] = 1; st.push_back({a, idx}); st.push_back({idx, b}); }
+    }
+}
+
+}  // namespace
+
+void write_control_net_stards_lines(const ControlNet& net_in, const std::string& path,
+                                    const LineSummaryOptions& opts) {
+    const size_t nPts0 = net_in.numPoints();
+
+    // --- 1. Trace geometric filaments in the ADJUSTED point cloud. ----------
+    // Build a voxel grid, then grow chains by greedy direction continuation:
+    // from the current head, step to the unused neighbor that best continues the
+    // heading (min turn), nearest first for the seed step.
+    const double cell = opts.cellSize, sr2 = opts.cellSize * opts.cellSize;
+    const double cosTurn = std::cos(opts.maxTurnDeg * M_PI / 180.0);
+    const bool haveAdj = net_in.adjustedX.size() == nPts0 && net_in.hasAdjusted.size() == nPts0;
+
+    VoxelGrid grid; grid.cell = cell;
+    auto adjOf = [&](size_t i, double& x, double& y, double& z) {
+        x = net_in.adjustedX[i]; y = net_in.adjustedY[i]; z = net_in.adjustedZ[i];
+    };
+    if (haveAdj) {
+        for (uint32_t i = 0; i < nPts0; ++i) {
+            if (net_in.hasAdjusted[i] == 0.0) continue;
+            long long cx, cy, cz; grid.cellOf(net_in.adjustedX[i], net_in.adjustedY[i], net_in.adjustedZ[i], cx, cy, cz);
+            grid.cells[VoxelGrid::pack(cx, cy, cz)].push_back(i);
+        }
+    }
+    std::vector<uint8_t> used(nPts0, 0);
+    std::vector<uint32_t> nb;
+    auto neighbors = [&](uint32_t i) {
+        nb.clear();
+        long long cx, cy, cz; grid.cellOf(net_in.adjustedX[i], net_in.adjustedY[i], net_in.adjustedZ[i], cx, cy, cz);
+        for (int dx=-1; dx<=1; ++dx) for (int dy=-1; dy<=1; ++dy) for (int dz=-1; dz<=1; ++dz) {
+            auto it = grid.cells.find(VoxelGrid::pack(cx+dx, cy+dy, cz+dz));
+            if (it == grid.cells.end()) continue;
+            for (uint32_t j : it->second) {
+                if (j == i || used[j]) continue;
+                double d[3] = {net_in.adjustedX[j]-net_in.adjustedX[i],
+                               net_in.adjustedY[j]-net_in.adjustedY[i],
+                               net_in.adjustedZ[j]-net_in.adjustedZ[i]};
+                if (d[0]*d[0]+d[1]*d[1]+d[2]*d[2] <= sr2) nb.push_back(j);
+            }
+        }
+    };
+
+    std::vector<std::vector<uint32_t>> chains;  // each = point indices along a filament
+    if (haveAdj) {
+        for (uint32_t seed = 0; seed < nPts0; ++seed) {
+            if (used[seed] || net_in.hasAdjusted[seed] == 0.0) continue;
+            std::vector<uint32_t> chain = {seed}; used[seed] = 1;
+            uint32_t cur = seed; bool haveDir = false; double dir[3] = {0,0,0};
+            for (;;) {
+                neighbors(cur);
+                if (nb.empty()) break;
+                uint32_t best = UINT32_MAX; double bestScore = -1e30;
+                for (uint32_t j : nb) {
+                    double s[3] = {net_in.adjustedX[j]-net_in.adjustedX[cur],
+                                   net_in.adjustedY[j]-net_in.adjustedY[cur],
+                                   net_in.adjustedZ[j]-net_in.adjustedZ[cur]};
+                    double l = std::sqrt(s[0]*s[0]+s[1]*s[1]+s[2]*s[2]);
+                    if (l <= 0) continue;
+                    double score;
+                    if (!haveDir) { score = -l; }  // seed step: nearest
+                    else {
+                        double dot = (s[0]*dir[0]+s[1]*dir[1]+s[2]*dir[2]) / l;
+                        if (dot < cosTurn) continue;  // too sharp a turn
+                        score = dot - 1e-6 * l;       // best continuation, nearer tiebreak
+                    }
+                    if (score > bestScore) { bestScore = score; best = j; }
+                }
+                if (best == UINT32_MAX) break;
+                double s[3] = {net_in.adjustedX[best]-net_in.adjustedX[cur],
+                               net_in.adjustedY[best]-net_in.adjustedY[cur],
+                               net_in.adjustedZ[best]-net_in.adjustedZ[cur]};
+                double l = std::sqrt(s[0]*s[0]+s[1]*s[1]+s[2]*s[2]);
+                dir[0]=s[0]/l; dir[1]=s[1]/l; dir[2]=s[2]/l; haveDir = true;
+                used[best] = 1; chain.push_back(best); cur = best;
+            }
+            chains.push_back(std::move(chain));
+        }
+    }
+
+    // --- 2. Reorder points so each LONG filament is a contiguous block. -----
+    // Order = [long-filament points in filament order] then [everything else in
+    // original order]. Long filaments get contiguous [rangeStart,rangeCount).
+    std::vector<uint32_t> order; order.reserve(nPts0);
+    std::vector<uint8_t> placed(nPts0, 0);
+    std::vector<std::pair<uint32_t,uint32_t>> lineRanges;  // (rangeStart, rangeCount) in NEW order
+    for (auto& c : chains) {
+        if (c.size() < opts.minLen) continue;
+        uint32_t start = static_cast<uint32_t>(order.size());
+        for (uint32_t idx : c) { order.push_back(idx); placed[idx] = 1; }
+        lineRanges.push_back({start, static_cast<uint32_t>(c.size())});
+    }
+    for (uint32_t i = 0; i < nPts0; ++i) if (!placed[i]) order.push_back(i);
+
+    ControlNet net = applyPointPermutation(net_in, order);  // stored (reordered) net
+
+    // --- 3. Simplify each long filament + quantize vertices to (lon,lat). ----
+    // GLOBAL int16 quantization: lon∈[-π,π]→int16, lat∈[-π/2,π/2]→int16. Unlike a
+    // tile-relative scheme this can never saturate — a line may span the whole
+    // globe (12% span >1 tile, some wrap 360°) and still reconstruct exactly.
+    // Resolution is ~2πA/65536 ≈ 326 m in lon, ~162 m in lat — ample for an
+    // overview and cheap to compress (slowly-varying int16 under shuffle+GZIP).
+    const double A = opts.radiusA, C = opts.radiusC;
+    const double LON_S = 65535.0 / (2 * M_PI);   // rad → int16 code
+    const double LAT_S = 65535.0 / M_PI;
+    std::vector<int16_t> qlon, qlat;                 // global quantized vertices
+    std::vector<uint32_t> voff = {0};                // vertex CSR
+    std::vector<uint32_t> rangeStart, rangeCount;    // point windows (in NEW order)
+
+    std::vector<std::array<double,3>> pl;
+    std::vector<char> keep;
+    for (auto& lr : lineRanges) {
+        uint32_t start = lr.first, cnt = lr.second;
+        pl.clear();
+        for (uint32_t k = 0; k < cnt; ++k) {
+            size_t p = start + k;   // NEW order → contiguous
+            pl.push_back({net.adjustedX[p], net.adjustedY[p], net.adjustedZ[p]});
+        }
+        douglasPeucker(pl, opts.simplifyEps, keep);
+        for (size_t i = 0; i < pl.size(); ++i) {
+            if (!keep[i]) continue;
+            Vec3 p{pl[i][0], pl[i][1], pl[i][2]};
+            LatLon ll = utils::ecefToLatLon(p, A, C);
+            long qi = std::lround(ll.lon * LON_S); if (qi < -32768) qi = -32768; if (qi > 32767) qi = 32767;
+            long qj = std::lround(ll.lat * LAT_S); if (qj < -32768) qj = -32768; if (qj > 32767) qj = 32767;
+            qlon.push_back((int16_t)qi); qlat.push_back((int16_t)qj);
+        }
+        rangeStart.push_back(start);
+        rangeCount.push_back(cnt);
+        voff.push_back((uint32_t)qlon.size());
+    }
+    const size_t L = rangeStart.size();
+
+    // --- 4. L0 density map: per-tile point count over the whole cloud. -------
+    const int DLON = opts.densTilesLon, DLAT = opts.densTilesLat;
+    std::vector<int32_t> dens(DLON * DLAT, 0);
+    if (haveAdj) {
+        for (size_t p = 0; p < net.numPoints(); ++p) {
+            if (net.hasAdjusted[p] == 0.0) continue;
+            Vec3 pt{net.adjustedX[p], net.adjustedY[p], net.adjustedZ[p]};
+            LatLon ll = utils::ecefToLatLon(pt, A, C);
+            int tx = (int)((ll.lon + M_PI) / (2*M_PI) * DLON); if (tx<0) tx=0; if (tx>=DLON) tx=DLON-1;
+            int ty = (int)((ll.lat + M_PI/2) / M_PI * DLAT); if (ty<0) ty=0; if (ty>=DLAT) ty=DLAT-1;
+            dens[ty * DLON + tx]++;
+        }
+    }
+
+    // --- 5. Write: base cnet/2 arrays (reordered) + "lines" layer. ----------
+    star::StarConfig cfg;
+    cfg.compression = star::CompressionAlgorithm::GZIP_SHUFFLE_BLOCK;
+    auto dsp = StarDataset::create(path, cfg);
+    StarDataset& ds = *dsp;
+
+    putStr(ds, "h.networkId", net.header.networkId);
+    putStr(ds, "h.targetName", net.header.targetName);
+    putStr(ds, "h.created", net.header.created);
+    putStr(ds, "h.lastModified", net.header.lastModified);
+    putStr(ds, "h.description", net.header.description);
+    putStr(ds, "h.userName", net.header.userName);
+    putStr(ds, "h.format", "cnet/2");   // overwritten below
+
+#define X(kind, key, member) PUT_##kind(key, member);
+    CNET_POINT_COLUMNS(X)
+    CNET_MEASURE_COLUMNS(X)
+    CNET_CSR_COLUMNS(X)
+#undef X
+
+    auto layer = ds.create_layer(kLinesLayer);
+    auto putI16 = [&](const char* k, const std::vector<int16_t>& v) {
+        NDArray<int16_t> a({v.size()}, (int16_t)0);
+        if (!v.empty()) std::copy(v.begin(), v.end(), a.data().begin());
+        layer->put(k, std::move(a));
+    };
+    auto putI32 = [&](const char* k, const std::vector<int32_t>& v) {
+        NDArray<int32_t> a({v.size()}, 0);
+        if (!v.empty()) std::copy(v.begin(), v.end(), a.data().begin());
+        layer->put(k, std::move(a));
+    };
+    auto putU32 = [&](const char* k, const std::vector<uint32_t>& v) {
+        NDArray<uint32_t> a({v.size()}, 0u);
+        if (!v.empty()) std::copy(v.begin(), v.end(), a.data().begin());
+        layer->put(k, std::move(a));
+    };
+    putI16("lines.qlon", qlon);
+    putI16("lines.qlat", qlat);
+    putU32("lines.voff", voff);
+    putU32("lines.rangeStart", rangeStart);
+    putU32("lines.rangeCount", rangeCount);
+    putI32("lines.dens", dens);
+    (void)putI32;  // (kept for the density array above)
+
+    // Header stamps (base metadata block): format + method + ellipsoid so the
+    // reader can dequantize without out-of-band knowledge. Global int16 encoding,
+    // so no tiling params are needed.
+    putStr(ds, "h.format", "cnet/3");
+    putStr(ds, "h.summaryMethod", "lines");
+    putStr(ds, "h.pointsReordered", "1");
+    putStr(ds, "h.lineCount", std::to_string(L));
+    putStr(ds, "h.linesRadiusA", std::to_string((long long)std::llround(A)));
+    putStr(ds, "h.linesRadiusC", std::to_string((long long)std::llround(C)));
+    putStr(ds, "h.densTilesLon", std::to_string(DLON));
+    putStr(ds, "h.densTilesLat", std::to_string(DLAT));
+
+    dsp->close();
+}
+
+// ===========================================================================
+// Lines reader (portable — dequantizes to BCBF XYZ)
+// ===========================================================================
+
+struct LinesReader::Impl {
+    std::shared_ptr<StarDataset> ds;
+    size_t nLines = 0;
+    std::vector<uint32_t> voff;         // vertex CSR (size L+1)
+    std::vector<uint32_t> rangeStart, rangeCount;
+    std::vector<float> vxyz;            // dequantized vertices, interleaved xyz
+};
+
+LinesReader::LinesReader() : impl_(std::make_unique<Impl>()) {}
+LinesReader::~LinesReader() = default;
+LinesReader::LinesReader(LinesReader&&) noexcept = default;
+LinesReader& LinesReader::operator=(LinesReader&&) noexcept = default;
+
+LinesReader LinesReader::open(const std::string& path) {
+    star::setNumThreads(1);
+    LinesReader r;
+    Impl& im = *r.impl_;
+    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY);
+    if (!im.ds->has_layer(kLinesLayer)) return r;   // no lines → count()==0
+
+    // Ellipsoid params from the header (fall back to IAU Mars defaults).
+    auto hnum = [&](const char* key, double def) {
+        std::string s = getStr(*im.ds, key);
+        return s.empty() ? def : std::atof(s.c_str());
+    };
+    const double A = hnum("h.linesRadiusA", 3396190.0);
+    const double C = hnum("h.linesRadiusC", 3376200.0);
+    const double LON_S = 65535.0 / (2 * M_PI);   // must match the writer
+    const double LAT_S = 65535.0 / M_PI;
+
+    auto layer = im.ds->get_layer(kLinesLayer);
+    auto getI16 = [&](const char* k) -> std::vector<int16_t> {
+        try { auto a = layer->get<int16_t>(k); return std::vector<int16_t>(a.data().begin(), a.data().end()); }
+        catch (...) { return {}; }
+    };
+    auto getU32 = [&](const char* k) -> std::vector<uint32_t> {
+        try { auto a = layer->get<uint32_t>(k); return std::vector<uint32_t>(a.data().begin(), a.data().end()); }
+        catch (...) { return {}; }
+    };
+    std::vector<int16_t> qlon = getI16("lines.qlon"), qlat = getI16("lines.qlat");
+    im.voff = getU32("lines.voff");
+    im.rangeStart = getU32("lines.rangeStart");
+    im.rangeCount = getU32("lines.rangeCount");
+    im.nLines = im.rangeStart.size();
+
+    // Dequantize each vertex: global int16 → (lon,lat) → BCBF on the ellipsoid
+    // surface (height dropped — the overview is on-surface).
+    im.vxyz.resize(qlon.size() * 3);
+    for (size_t vi = 0; vi < qlon.size(); ++vi) {
+        double lon = qlon[vi] / LON_S;
+        double lat = qlat[vi] / LAT_S;
+        Vec3 p = utils::latLonToEcef(lat, lon, 0.0, A, C);
+        im.vxyz[vi*3+0] = (float)p.x;
+        im.vxyz[vi*3+1] = (float)p.y;
+        im.vxyz[vi*3+2] = (float)p.z;
+    }
+    return r;
+}
+
+size_t LinesReader::count() const { return impl_->nLines; }
+size_t LinesReader::vertexCount() const { return impl_->vxyz.size() / 3; }
+void LinesReader::lineRange(size_t i, uint32_t& firstVertex, uint32_t& n) const {
+    const Impl& im = *impl_;
+    if (i + 1 < im.voff.size()) { firstVertex = im.voff[i]; n = im.voff[i+1] - im.voff[i]; }
+    else { firstVertex = 0; n = 0; }
+}
+void LinesReader::linePointRange(size_t i, uint32_t& start, uint32_t& count) const {
+    const Impl& im = *impl_;
+    start = i < im.rangeStart.size() ? im.rangeStart[i] : 0;
+    count = i < im.rangeCount.size() ? im.rangeCount[i] : 0;
+}
+const std::vector<float>& LinesReader::verticesXYZ() const { return impl_->vxyz; }
 
 }  // namespace cnet

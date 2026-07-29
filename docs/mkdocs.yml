@@ -4,6 +4,9 @@ site_description: >-
   DEM operations, CSM camera models, and coordinate transforms, in C++ and
   right in your browser via WebAssembly.
 site_author: U.S. Geological Survey — Astrogeology Science Center
+# Canonical URL of the published site (GitHub Pages). Used for the sitemap and
+# canonical <link>s. Update the org/repo if the GitHub project path differs.
+site_url: https://DOI-USGS.github.io/miniset/
 repo_name: astrogeology/miniset
 repo_url: https://code.usgs.gov/astrogeology/miniset
 copyright: >-

@@ -13,7 +13,8 @@ const TEST_SUITES = [
     'test_api.js',
     'test_dem.js',
     'test_csm.js',
-    'test_attached_spice.js'
+    'test_attached_spice.js',
+    'test_summary.js'
 ];
 
 async function runTest(testFile) {

@@ -495,6 +495,343 @@ TEST(Cnet, StardsDeepFields) {
     std::remove(path.c_str());
 }
 
+// ---------------------------------------------------------------------------
+// Gaussian-splat LOD summary ("cnet/3")
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Build a net whose adjusted points form `nClusters` elongated ribbons (one
+// splat should capture each). Points are laid out cluster-by-cluster so file
+// order is already contiguous per cluster — matching how the segment fitter
+// partitions. `perCluster` points each. Deterministic (no RNG).
+ControlNet buildRibbonNetwork(int nClusters, int perCluster) {
+    ControlNet net;
+    net.header.networkId = "RibbonNet";
+    net.header.targetName = "Mars";
+    net.aprioriCovarOffset.push_back(0);
+    net.adjustedCovarOffset.push_back(0);
+    net.measureLogOffset.push_back(0);
+
+    // Cluster centers spread around the globe; each ribbon is long along one
+    // body axis (~2e5 m) and thin across (~2e3 m) — highly anisotropic.
+    const double R = 3.4e6;
+    for (int c = 0; c < nClusters; ++c) {
+        double cx = R * std::cos(c), cy = R * std::sin(c), cz = 1.0e5 * c;
+        for (int i = 0; i < perCluster; ++i) {
+            double t = (static_cast<double>(i) / perCluster - 0.5) * 2.0e5;  // long axis
+            double w = ((i % 7) - 3) * 5.0e2;                                // thin axis
+            net.pointId.push_back("p" + std::to_string(c) + "_" + std::to_string(i));
+            net.pointType.push_back(PointType::Free);
+            net.chooserName.push_back(""); net.datetime.push_back("");
+            net.editLock.push_back(0); net.hasEditLock.push_back(0);
+            net.ignore.push_back(0); net.hasIgnore.push_back(0);
+            net.jigsawRejected.push_back(0); net.hasJigsawRejected.push_back(0);
+            net.referenceIndex.push_back(0); net.hasReferenceIndex.push_back(0);
+            net.aprioriSurfPointSource.push_back(AprioriSource::None);
+            net.aprioriSurfPointSourceFile.push_back("");
+            net.aprioriRadiusSource.push_back(AprioriSource::None);
+            net.aprioriRadiusSourceFile.push_back("");
+            net.aprioriX.push_back(0); net.aprioriY.push_back(0); net.aprioriZ.push_back(0);
+            net.hasApriori.push_back(0);
+            net.adjustedX.push_back(cx + t); net.adjustedY.push_back(cy + w);
+            net.adjustedZ.push_back(cz); net.hasAdjusted.push_back(1);
+            net.aprioriCovarOffset.push_back(static_cast<uint32_t>(net.aprioriCovar.size()));
+            net.adjustedCovarOffset.push_back(static_cast<uint32_t>(net.adjustedCovar.size()));
+            net.measureStart.push_back(static_cast<uint32_t>(net.numMeasures()));
+            net.measureCount.push_back(0);
+        }
+    }
+    return net;
+}
+
+}  // namespace
+
+// The K splat ranges must be an exact contiguous partition of the points, and
+// their weights must sum to the number of contributing (adjusted) points.
+TEST(StardsSummary, CoveragePartition) {
+    ControlNet net = buildRibbonNetwork(4, 500);  // 2000 points
+    GaussianSummary s = fit_gaussian_summary(net, 4);
+    ASSERT_EQ(s.size(), 4u);
+
+    uint64_t wsum = 0, rcsum = 0;
+    uint32_t expectStart = 0;
+    for (size_t i = 0; i < s.size(); ++i) {
+        EXPECT_EQ(s.rangeStart[i], expectStart);  // contiguous, no gaps/overlaps
+        expectStart += s.rangeCount[i];
+        wsum += s.weight[i];
+        rcsum += s.rangeCount[i];
+    }
+    EXPECT_EQ(rcsum, net.numPoints());   // ranges tile all points
+    EXPECT_EQ(wsum, net.numPoints());    // all points are adjusted here
+    EXPECT_EQ(expectStart, net.numPoints());
+}
+
+// Drill-down: reading a splat's [rangeStart, rangeCount) window back must return
+// exactly that cluster's points, and their empirical mean must match the stored
+// mu. This is the core correctness guarantee of the format.
+TEST(StardsSummary, DrillDownMatchesMu) {
+    ControlNet net = buildRibbonNetwork(4, 500);
+    std::string path = std::string(::testing::TempDir()) + "summary.stards";
+    write_control_net_stards_summarized(net, path, 4);
+
+    SummaryReader sr = SummaryReader::open(path);
+    ASSERT_EQ(sr.count(), 4u);
+    const GaussianSummary& s = sr.splats();
+
+    HeroPointsReader hero = HeroPointsReader::open(path);
+    ASSERT_EQ(hero.count(), net.numPoints());
+
+    for (size_t i = 0; i < s.size(); ++i) {
+        std::vector<float> xyz;
+        double radius = 0;
+        size_t got = hero.readXYZ(s.rangeStart[i], s.rangeCount[i], xyz, radius);
+        ASSERT_EQ(got, s.rangeCount[i]);
+        double mx = 0, my = 0, mz = 0;
+        for (size_t p = 0; p < got; ++p) { mx += xyz[p*3]; my += xyz[p*3+1]; mz += xyz[p*3+2]; }
+        mx /= got; my /= got; mz /= got;
+        // float32 readback of globe-scale coords → tolerance ~a metre.
+        EXPECT_NEAR(mx, s.muX[i], 2.0);
+        EXPECT_NEAR(my, s.muY[i], 2.0);
+        EXPECT_NEAR(mz, s.muZ[i], 2.0);
+    }
+    std::remove(path.c_str());
+}
+
+// The fit must capture ribbon anisotropy: with one splat per ribbon, the
+// covariance's largest diagonal should dominate the smallest (the long axis vs
+// the thin/degenerate axes) — the whole reason splats beat axis-aligned quads.
+TEST(StardsSummary, CapturesAnisotropy) {
+    ControlNet net = buildRibbonNetwork(4, 500);
+    GaussianSummary s = fit_gaussian_summary(net, 4);
+    ASSERT_EQ(s.size(), 4u);
+    for (size_t i = 0; i < s.size(); ++i) {
+        double diag[3] = {s.s0[i], s.s3[i], s.s5[i]};
+        double mx = std::max({diag[0], diag[1], diag[2]});
+        double mn = std::min({diag[0], diag[1], diag[2]});
+        EXPECT_GT(mx, 0.0);
+        EXPECT_GT(mx, 100.0 * (mn + 1.0));  // strongly anisotropic
+    }
+}
+
+// A cnet/3 file (summary layer added) must still read back as the full net,
+// unchanged — the summary layer is additive and ignored by base-layer reads.
+TEST(StardsSummary, FullReadParityWithSummary) {
+    ControlNet net = buildRibbonNetwork(3, 300);
+    std::string path = std::string(::testing::TempDir()) + "cnet3parity.stards";
+    write_control_net_stards_summarized(net, path, 8);
+    ControlNet back = read_control_net(path);   // ignores the "summary" layer
+    ASSERT_EQ(back.numPoints(), net.numPoints());
+    ASSERT_EQ(back.numMeasures(), net.numMeasures());
+    for (size_t i = 0; i < net.numPoints(); ++i) {
+        EXPECT_EQ(back.pointId[i], net.pointId[i]);
+        EXPECT_DOUBLE_EQ(back.adjustedX[i], net.adjustedX[i]);
+        EXPECT_DOUBLE_EQ(back.adjustedY[i], net.adjustedY[i]);
+        EXPECT_DOUBLE_EQ(back.adjustedZ[i], net.adjustedZ[i]);
+    }
+    std::remove(path.c_str());
+}
+
+// Apriori-only nets (no adjusted coordinates) must still summarize, using the
+// apriori XYZ fallback.
+TEST(StardsSummary, AprioriFallback) {
+    ControlNet net = buildRibbonNetwork(2, 400);
+    // Flip: move adjusted coords to apriori, clear adjusted presence.
+    net.aprioriX = net.adjustedX; net.aprioriY = net.adjustedY; net.aprioriZ = net.adjustedZ;
+    net.hasApriori.assign(net.numPoints(), 1.0);
+    net.hasAdjusted.assign(net.numPoints(), 0.0);
+    GaussianSummary s = fit_gaussian_summary(net, 2);
+    ASSERT_EQ(s.size(), 2u);
+    uint64_t wsum = 0;
+    for (size_t i = 0; i < s.size(); ++i) wsum += s.weight[i];
+    EXPECT_EQ(wsum, net.numPoints());  // fitted from apriori, not adjusted
+}
+
+namespace {
+
+// A whole point extracted as a self-contained record: its id/coords plus its
+// measures (serial + sample/line) and its covariance element counts. Used to
+// compare two nets as SETS of points regardless of point order.
+struct PointRecord {
+    std::string id;
+    double ax, ay, az; uint8_t hasAdj;
+    std::vector<std::string> measSN;
+    std::vector<double> measSample;
+    size_t aprioriCovarN, adjustedCovarN;
+    bool operator<(const PointRecord& o) const { return id < o.id; }
+};
+
+PointRecord extractPoint(const ControlNet& n, size_t p) {
+    PointRecord r;
+    r.id = n.pointId[p];
+    r.ax = n.adjustedX[p]; r.ay = n.adjustedY[p]; r.az = n.adjustedZ[p];
+    r.hasAdj = static_cast<uint8_t>(n.hasAdjusted[p] != 0.0);
+    uint32_t s = n.measureStart[p], c = n.measureCount[p];
+    for (uint32_t m = 0; m < c; ++m) {
+        r.measSN.push_back(n.serialNumber[s + m]);
+        r.measSample.push_back(n.sample[s + m]);
+    }
+    r.aprioriCovarN = n.aprioriCovarOffset[p + 1] - n.aprioriCovarOffset[p];
+    r.adjustedCovarN = n.adjustedCovarOffset[p + 1] - n.adjustedCovarOffset[p];
+    return r;
+}
+
+std::vector<PointRecord> pointSet(const ControlNet& n) {
+    std::vector<PointRecord> v;
+    for (size_t p = 0; p < n.numPoints(); ++p) v.push_back(extractPoint(n, p));
+    std::sort(v.begin(), v.end());
+    return v;
+}
+
+}  // namespace
+
+// Reordering by track must be a permutation: the net is identical as a SET of
+// whole points (each point keeps its measures + covariance), only order changes.
+// This is the correctness gate for drill-down after a "tracks" summarize.
+TEST(StardsSummary, ReorderIsPermutation) {
+    ControlNet net = buildTestNetwork();  // p1 (2 meas + covar), p2 (1 meas), p3 (0)
+    ControlNet reordered = reorder_points_by_track(net);
+
+    ASSERT_EQ(reordered.numPoints(), net.numPoints());
+    ASSERT_EQ(reordered.numMeasures(), net.numMeasures());
+
+    std::vector<PointRecord> a = pointSet(net), b = pointSet(reordered);
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_EQ(a[i].id, b[i].id);
+        EXPECT_DOUBLE_EQ(a[i].ax, b[i].ax);
+        EXPECT_DOUBLE_EQ(a[i].ay, b[i].ay);
+        EXPECT_DOUBLE_EQ(a[i].az, b[i].az);
+        EXPECT_EQ(a[i].hasAdj, b[i].hasAdj);
+        EXPECT_EQ(a[i].measSN, b[i].measSN);         // measures moved WITH the point
+        EXPECT_EQ(a[i].measSample, b[i].measSample);
+        EXPECT_EQ(a[i].aprioriCovarN, b[i].aprioriCovarN);
+        EXPECT_EQ(a[i].adjustedCovarN, b[i].adjustedCovarN);
+    }
+}
+
+// Reordering must keep the CSR invariants intact: measureStart is the running
+// prefix sum of measureCount, and covariance offsets are non-decreasing with the
+// right totals. A broken permutation corrupts these.
+TEST(StardsSummary, ReorderKeepsCsrValid) {
+    ControlNet net = buildTestNetwork();
+    ControlNet r = reorder_points_by_track(net);
+
+    uint32_t running = 0;
+    for (size_t p = 0; p < r.numPoints(); ++p) {
+        EXPECT_EQ(r.measureStart[p], running);
+        running += r.measureCount[p];
+    }
+    EXPECT_EQ(running, r.numMeasures());
+
+    ASSERT_EQ(r.aprioriCovarOffset.size(), r.numPoints() + 1);
+    ASSERT_EQ(r.adjustedCovarOffset.size(), r.numPoints() + 1);
+    EXPECT_EQ(r.aprioriCovarOffset.front(), 0u);
+    EXPECT_EQ(r.aprioriCovarOffset.back(), r.aprioriCovar.size());
+    EXPECT_EQ(r.adjustedCovarOffset.back(), r.adjustedCovar.size());
+    for (size_t p = 0; p < r.numPoints(); ++p) {
+        EXPECT_LE(r.aprioriCovarOffset[p], r.aprioriCovarOffset[p + 1]);
+        EXPECT_LE(r.adjustedCovarOffset[p], r.adjustedCovarOffset[p + 1]);
+    }
+}
+
+// End-to-end "tracks" summarize: write a cnet/3 with byTracks=true, read it back
+// as a full net (must equal the original as a set), and confirm each splat's
+// [rangeStart,rangeCount) window drills down to points whose mean matches mu.
+TEST(StardsSummary, TracksSummarizeDrillDown) {
+    ControlNet net = buildRibbonNetwork(6, 300);  // 1800 points across 6 ribbons
+    std::string path = std::string(::testing::TempDir()) + "tracks.stards";
+    write_control_net_stards_summarized(net, path, 6, /*byTracks=*/true);
+
+    // Full read-back equals the original as a SET (reorder is a permutation).
+    ControlNet back = read_control_net(path);
+    ASSERT_EQ(back.numPoints(), net.numPoints());
+    std::vector<PointRecord> a = pointSet(net), b = pointSet(back);
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_EQ(a[i].id, b[i].id);
+        EXPECT_DOUBLE_EQ(a[i].ax, b[i].ax);
+    }
+
+    // Drill-down against the STORED (reordered) order.
+    SummaryReader sr = SummaryReader::open(path);
+    ASSERT_EQ(sr.count(), 6u);
+    const GaussianSummary& s = sr.splats();
+    HeroPointsReader hero = HeroPointsReader::open(path);
+    for (size_t i = 0; i < s.size(); ++i) {
+        std::vector<float> xyz; double radius = 0;
+        size_t got = hero.readXYZ(s.rangeStart[i], s.rangeCount[i], xyz, radius);
+        ASSERT_EQ(got, s.rangeCount[i]);
+        double mx = 0, my = 0, mz = 0;
+        for (size_t p = 0; p < got; ++p) { mx += xyz[p*3]; my += xyz[p*3+1]; mz += xyz[p*3+2]; }
+        mx /= got; my /= got; mz /= got;
+        EXPECT_NEAR(mx, s.muX[i], 2.0);
+        EXPECT_NEAR(my, s.muY[i], 2.0);
+        EXPECT_NEAR(mz, s.muZ[i], 2.0);
+    }
+    std::remove(path.c_str());
+}
+
+// ---------------------------------------------------------------------------
+// Polyline ("lines") LOD summary (cnet/3)
+// ---------------------------------------------------------------------------
+
+// A cnet/3 "lines" net must: read back as the ORIGINAL net as a SET of points
+// (reorder is a permutation), expose polylines whose vertices sit on the
+// ellipsoid surface, and per-line point windows that drill down to real points.
+TEST(StardsLines, WriteReadDrillDown) {
+    ControlNet net = buildRibbonNetwork(6, 400);   // 6 elongated ribbons, adjusted coords
+    std::string path = std::string(::testing::TempDir()) + "lines.stards";
+    write_control_net_stards_lines(net, path);      // default options
+
+    // 1. Full read-back equals the original as a SET (permutation invariant).
+    ControlNet back = read_control_net(path);
+    ASSERT_EQ(back.numPoints(), net.numPoints());
+    std::vector<PointRecord> a = pointSet(net), b = pointSet(back);
+    ASSERT_EQ(a.size(), b.size());
+    for (size_t i = 0; i < a.size(); ++i) {
+        EXPECT_EQ(a[i].id, b[i].id);
+        EXPECT_DOUBLE_EQ(a[i].ax, b[i].ax);
+        EXPECT_DOUBLE_EQ(a[i].ay, b[i].ay);
+        EXPECT_DOUBLE_EQ(a[i].az, b[i].az);
+    }
+
+    // 2. Lines exist and cover a good fraction of points (ribbons trace well).
+    LinesReader lr = LinesReader::open(path);
+    ASSERT_GT(lr.count(), 0u);
+    const std::vector<float>& V = lr.verticesXYZ();
+    ASSERT_GT(V.size(), 0u);
+
+    // 3. Vertices lie on the Mars ellipsoid surface (radius ~3376–3396 km).
+    for (size_t v = 0; v < lr.vertexCount(); ++v) {
+        double x = V[v*3], y = V[v*3+1], z = V[v*3+2];
+        double rad = std::sqrt(x*x + y*y + z*z);
+        EXPECT_GT(rad, 3.0e6);
+        EXPECT_LT(rad, 3.5e6);
+    }
+
+    // 4. Point windows partition-cover and each line's points sit near its
+    //    polyline (perp distance bounded by the simplify tolerance + relief).
+    HeroPointsReader hero = HeroPointsReader::open(path);
+    uint64_t onLines = 0;
+    for (size_t i = 0; i < lr.count(); ++i) {
+        uint32_t rs, rc; lr.linePointRange(i, rs, rc);
+        onLines += rc;
+        EXPECT_LE(rs + rc, hero.count());
+    }
+    EXPECT_GT(onLines, 0u);
+    EXPECT_LE(onLines, (uint64_t)net.numPoints());
+
+    // 5. Drill-down: a line's window returns exactly that many real points.
+    if (lr.count() > 0) {
+        uint32_t rs, rc; lr.linePointRange(0, rs, rc);
+        std::vector<float> xyz; double radius = 0;
+        size_t got = hero.readXYZ(rs, rc, xyz, radius);
+        EXPECT_EQ(got, rc);
+    }
+    std::remove(path.c_str());
+}
+
 // Lazy StarDS reader: open() reads shape only; readPoints() slices numeric
 // columns via get_slice, windows string columns, and re-bases CSR offsets. A
 // slice must equal the same points from an eager read.

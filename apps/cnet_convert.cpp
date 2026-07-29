@@ -36,6 +36,7 @@
 #include "cnet/control_net_reader.hpp"
 #include "cnet/miniparquet_io.hpp"
 #include "cnet/net_protobuf.hpp"
+#include "cnet/stards_io.hpp"
 
 namespace {
 
@@ -77,6 +78,18 @@ int main(int argc, char** argv) {
     program.add_argument("--compress")
         .default_value(std::string("gzip"))
         .help("Parquet page compression for .parquet output: gzip (default) or none");
+    program.add_argument("--summarize")
+        .default_value(std::string())
+        .help("For .stards output: also write a Gaussian-splat LOD summary layer "
+              "(cnet/3) of the given number of splats, e.g. --summarize 4000");
+    program.add_argument("--summarize-method")
+        .default_value(std::string("tracks"))
+        .help("Summary type for .stards output. Gaussian-splat methods (need "
+              "--summarize K): 'tracks' (default) reorders by image-overlap track "
+              "before fitting; 'segment' fits in file order. Polyline method: "
+              "'lines' traces geometric filaments and stores them as compact "
+              "on-ellipsoid (lon,lat) polylines (no K needed) — the faithful "
+              "track model.");
 
     try {
         program.parse_args(argc, argv);
@@ -89,12 +102,63 @@ int main(int argc, char** argv) {
     const std::string to = program.get<std::string>("to");
     const std::string where = program.get<std::string>("--where");
     const std::string compressArg = program.get<std::string>("--compress");
+    const std::string summarizeArg = program.get<std::string>("--summarize");
+    const std::string summarizeMethod = program.get<std::string>("--summarize-method");
     cnet::ParquetCompression pcodec = (compressArg == "none")
         ? cnet::ParquetCompression::None : cnet::ParquetCompression::Gzip;
+
+    size_t summarizeK = 0;
+    if (!summarizeArg.empty()) {
+        try {
+            long long v = std::stoll(summarizeArg);
+            if (v <= 0) throw std::runtime_error("must be positive");
+            summarizeK = static_cast<size_t>(v);
+        } catch (const std::exception&) {
+            std::cerr << "bad --summarize (expected a positive splat count): " << summarizeArg << "\n";
+            return 1;
+        }
+    }
+    if (summarizeMethod != "tracks" && summarizeMethod != "segment" &&
+        summarizeMethod != "lines") {
+        std::cerr << "bad --summarize-method (expected 'tracks', 'segment', or 'lines'): "
+                  << summarizeMethod << "\n";
+        return 1;
+    }
+    const bool summarizeByTracks = (summarizeMethod == "tracks");
+    const bool summarizeLines = (summarizeMethod == "lines");
 
     try {
         const bool fromParquet = ends_with(from, ".parquet");
         const bool toParquet = ends_with(to, ".parquet");
+        const bool toStards = ends_with(to, ".stards");
+
+        // --- Polyline LOD path: trace geometric filaments and store them as
+        // compact on-ellipsoid (lon,lat) polylines. No K needed (line count is
+        // data-driven). Whole-net load; .stards output only.
+        if (summarizeLines) {
+            if (!toStards)
+                throw std::runtime_error("--summarize-method lines requires a .stards output");
+            cnet::ControlNet net = cnet::read_control_net(from);
+            cnet::write_control_net_stards_lines(net, to);   // defaults tuned on a real net
+            std::cout << "Converted " << from << " -> " << to << " (cnet/3, polylines)\n"
+                      << "  points: " << net.numPoints() << "  measures: " << net.numMeasures()
+                      << "  method: lines\n";
+            return 0;
+        }
+
+        // --- Summarize path: write a cnet/3 .stards with a Gaussian-splat LOD
+        // layer. Requires a whole-net load (the fit needs all adjusted points);
+        // --where/streaming don't apply. Only valid for .stards output.
+        if (summarizeK > 0) {
+            if (!toStards)
+                throw std::runtime_error("--summarize requires a .stards output");
+            cnet::ControlNet net = cnet::read_control_net(from);
+            cnet::write_control_net_stards_summarized(net, to, summarizeK, summarizeByTracks);
+            std::cout << "Converted " << from << " -> " << to << " (cnet/3, summarized)\n"
+                      << "  points: " << net.numPoints() << "  measures: " << net.numMeasures()
+                      << "  splats: " << summarizeK << "  method: " << summarizeMethod << "\n";
+            return 0;
+        }
 
         // --- Query path: range filter (requires a Parquet source) -----------
         if (!where.empty()) {
