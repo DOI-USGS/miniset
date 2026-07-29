@@ -9,6 +9,7 @@ dependencies:
   - csmapi>=1.0
   - usgscsm>=2.0
   - gdal>=3.8,<4
+  - libgdal-arrow-parquet>=3.8,<4  # OGR Parquet driver for control networks
   - proj>=9,<10
   - eigen>=3.3
   - suitesparse

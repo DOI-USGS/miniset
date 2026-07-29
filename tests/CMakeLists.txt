@@ -44,3 +44,29 @@ endif()
 
 # Test campt function with both GeoTIFF and ISIS3 cubes
 add_knoten_test(test_campt test_campt.cpp)
+
+# isisimport tests (native only). Fixtures are synthesized in memory (/vsimem)
+# from hand-authored PDS3/PDS4 labels, so no image files are needed on disk.
+if(NOT EMSCRIPTEN)
+    add_knoten_test(test_isisimport test_isisimport.cpp)
+    target_include_directories(test_isisimport PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../external)
+    target_link_libraries(test_isisimport PRIVATE GDAL::GDAL)
+    # Resolve bundled specs from the build tree (matches the library fallback).
+    target_compile_definitions(test_isisimport PRIVATE
+        MINISET_APPDATA_BUILD="${CMAKE_CURRENT_SOURCE_DIR}/../appdata/import")
+
+    # cnet tests (native only): protobuf + Parquet round-trips via /vsimem, and a
+    # read of the committed real Arrow parquet fixture.
+    add_knoten_test(test_cnet test_cnet.cpp)
+    target_link_libraries(test_cnet PRIVATE GDAL::GDAL)
+    # Vendored header-only miniparquet reader/writer + its zlib GZIP path.
+    target_include_directories(test_cnet PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../external)
+    target_compile_definitions(test_cnet PRIVATE
+        MINISET_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/data")
+    find_package(ZLIB)
+    if(ZLIB_FOUND)
+        target_compile_definitions(test_cnet PRIVATE MINIPARQUET_ENABLE_ZLIB)
+        target_link_libraries(test_cnet PRIVATE ZLIB::ZLIB)
+    endif()
+endif()

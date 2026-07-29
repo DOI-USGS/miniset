@@ -1,0 +1,12 @@
+# MkDocs build output.
+site/
+
+# Hero-banner point asset: a small XYZ-only .stards extracted locally from a
+# multi-GB net that is NOT committed. Regenerate with docs/tools/extract_hero_points
+# (see that file). Short-term local step; later the banner reads the points over
+# /vsicurl/ directly via the WASM StarDS reader.
+docs/assets/hero.stards
+docs/assets/hero-points.bin
+
+# Compiled local extractor binary.
+tools/extract_hero_points

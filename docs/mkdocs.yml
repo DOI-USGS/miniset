@@ -1,0 +1,98 @@
+site_name: Miniset
+site_description: >-
+  High-performance geospatial sensor modeling for planetary science —
+  DEM operations, CSM camera models, and coordinate transforms, in C++ and
+  right in your browser via WebAssembly.
+site_author: U.S. Geological Survey — Astrogeology Science Center
+repo_name: astrogeology/miniset
+repo_url: https://code.usgs.gov/astrogeology/miniset
+copyright: >-
+  Provided by the U.S. Geological Survey. Preliminary/provisional software —
+  see the disclaimer.
+
+# The Markdown content lives in ./docs, alongside the WASM assets that power
+# the in-browser playground.
+docs_dir: docs
+
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/earth
+    repo: fontawesome/brands/git-alt
+  favicon: assets/favicon.png
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: deep orange
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: deep orange
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - path: javascripts/playground.js
+    type: module
+  - path: javascripts/hero.js
+    type: module
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - toc:
+      permalink: true
+      title: On this page
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Getting Started: getting-started.md
+  - Playground: playground.md
+  - API Reference: api-reference.md
+  - Building for WASM: building-wasm.md
+
+extra:
+  social:
+    - icon: fontawesome/brands/git-alt
+      link: https://code.usgs.gov/astrogeology/miniset
+      name: Miniset on USGS GitLab
+  generator: false

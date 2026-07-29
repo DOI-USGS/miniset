@@ -7,3 +7,6 @@
 [submodule "external/PROJ"]
 	path = external/PROJ
 	url = https://github.com/OSGeo/PROJ.git
+[submodule "external/StarDS"]
+	path = external/StarDS
+	url = git@github.com:DOI-USGS/StarDS.git
