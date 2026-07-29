@@ -56,12 +56,35 @@ jobs:
       - name: Install docs toolchain
         run: pip install -r docs/requirements.txt
 
-      # Emscripten SDK, cached. Provides em++/emcmake/emmake + a bundled node.
-      - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+      # Emscripten SDK. Installed straight from the upstream emsdk repo rather
+      # than via a third-party action, so the workflow can't break when that
+      # action is unavailable. Provides em++/emcmake/emmake + a bundled node.
+      # The install is cached so only the first run pays the download cost.
+      - name: Cache emsdk
+        uses: actions/cache@v4
         with:
-          version: ${{ env.EM_VERSION }}
-          actions-cache-folder: emsdk-cache-${{ env.EM_VERSION }}
+          path: emsdk
+          key: emsdk-${{ env.EM_VERSION }}
+
+      - name: Set up Emscripten
+        run: |
+          set -eo pipefail
+          if [ ! -d emsdk/.git ]; then
+            git clone --depth 1 https://github.com/emscripten-core/emsdk.git emsdk
+          fi
+          cd emsdk
+          ./emsdk install "$EM_VERSION"
+          ./emsdk activate "$EM_VERSION"
+          # Persist emsdk's env (PATH to emcc/em++/emcmake + bundled node) so the
+          # later build steps in this job can see the toolchain.
+          source ./emsdk_env.sh
+          echo "EMSDK=$EMSDK" >> "$GITHUB_ENV"
+          echo "EM_CONFIG=$EMSDK/.emscripten" >> "$GITHUB_ENV"
+          {
+            echo "$EMSDK"
+            echo "$EMSDK/upstream/emscripten"
+            dirname "$(command -v node)"
+          } >> "$GITHUB_PATH"
 
       # Cache the heavy ExternalProject builds (PROJ/GDAL/SQLite) + CMake state so
       # only the first run pays the full multi-minute WASM dependency build.
