@@ -48,6 +48,18 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      # USGSCSM's embedded-deps branch (external/usgscsm/CMakeLists.txt:94-101)
+      # hard-requires, AT CONFIGURE TIME, the `sqlite3` CLI binary via find_program
+      # (EXE_SQLITE3). The Emscripten toolchain leaves find_program in HOST mode
+      # (CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER), so a host sqlite3 satisfies it.
+      # ubuntu-latest doesn't ship the CLI, so install it. (find_package(Sqlite3)
+      # is satisfied separately by the emsdk sysroot port — see embuilder below.)
+      - name: Install sqlite3 CLI (host tool for USGSCSM configure)
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends sqlite3
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -85,6 +97,20 @@ jobs:
             echo "$EMSDK/upstream/emscripten"
             dirname "$(command -v node)"
           } >> "$GITHUB_PATH"
+
+      # Prebuild the emscripten sqlite3 PORT into the sysroot. USGSCSM's embedded
+      # branch calls find_package(Sqlite3) (PROJ/cmake/FindSqlite3.cmake), and the
+      # Emscripten toolchain restricts find_library/find_path to the sysroot
+      # (CMAKE_FIND_ROOT_PATH_MODE_LIBRARY/INCLUDE = ONLY) — so it can ONLY be
+      # satisfied by libsqlite3.a + sqlite3.h in the emsdk cache, never a host lib.
+      # A fresh emsdk cache doesn't have it built yet, so build it now. (This is
+      # only to satisfy the configure check; the sqlite3 actually linked into the
+      # module is our custom SQLITE_THREADSAFE=0 build from BuildWasmDependencies.)
+      - name: Prebuild emscripten sqlite3 port (sysroot lib for USGSCSM configure)
+        run: |
+          set -eo pipefail
+          source emsdk/emsdk_env.sh
+          embuilder build sqlite3
 
       # Cache the heavy ExternalProject builds (PROJ/GDAL/SQLite) + CMake state so
       # only the first run pays the full multi-minute WASM dependency build.
