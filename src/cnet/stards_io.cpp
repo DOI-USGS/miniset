@@ -36,6 +36,22 @@ namespace {
 using star::NDArray;
 using star::StarDataset;
 
+// Open options for the cloud streaming readers (hero points, summary, lines).
+// These always target the multi-GB remote net, where StarDS's default
+// whole-file prefetch is pure waste: on open() the reader speculatively issues
+// one GET of [0, prefetch_whole_below_bytes] (8 MiB) hoping the whole object
+// fits its cache, then discards every byte when it learns the true size is far
+// larger (stards.h ensure_whole_cached). That is ~8 MiB downloaded-and-thrown-
+// away per open, before a single vertex can render. Setting the threshold to 0
+// skips the prefetch entirely and goes straight to the index+ranged reads we
+// actually use — the whole net never fits in memory anyway. (Small local/camera
+// .stards still benefit from the default via the other open() paths.)
+star::OpenOptions rangedOpenOptions() {
+    star::OpenOptions opts;
+    opts.prefetch_whole_below_bytes = 0;
+    return opts;
+}
+
 // Column key names. Point columns are prefixed "p.", measures "m.", the CSR
 // offset/index arrays "x.". The network header lives in StarDS metadata.
 // One StarDS array per ControlNet SoA vector keeps the mapping 1:1 and each
@@ -616,7 +632,9 @@ HeroPointsReader HeroPointsReader::open(const std::string& path) {
     Impl& im = *r.impl_;
     // open() routes /vsicurl/, s3://, /vsis3/, and local paths; for a remote URL
     // it reads only the header/index via one ranged GET (no whole-file download).
-    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY);
+    // rangedOpenOptions() suppresses the 8 MiB speculative whole-file prefetch,
+    // which never fits (and is discarded) for the multi-GB net.
+    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY, rangedOpenOptions());
 
     // Resolve the coordinate keys and the point count in one pass. Use
     // array_length (array namespace only — no metadata probe, no extra fetch) and
@@ -1036,7 +1054,7 @@ SummaryReader SummaryReader::open(const std::string& path) {
     star::setNumThreads(1);  // WASM has no pthreads; harmless natively.
     SummaryReader r;
     Impl& im = *r.impl_;
-    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY);
+    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY, rangedOpenOptions());
     if (!im.ds->has_layer(kSummaryLayer)) return r;  // no summary → count()==0
 
     auto layer = im.ds->get_layer(kSummaryLayer);
@@ -1362,7 +1380,7 @@ LinesReader LinesReader::open(const std::string& path) {
     star::setNumThreads(1);
     LinesReader r;
     Impl& im = *r.impl_;
-    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY);
+    im.ds = StarDataset::open(path, star::FileMode::READ_ONLY, rangedOpenOptions());
     if (!im.ds->has_layer(kLinesLayer)) return r;   // no lines → count()==0
 
     // Ellipsoid params from the header (fall back to IAU Mars defaults).

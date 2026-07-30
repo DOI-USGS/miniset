@@ -103,13 +103,14 @@
   text-shadow: none;
 }
 
-/* Subtle live "N points loaded" readout for the streaming point cloud. Sits in
-   the bottom-left corner, over the canvas but understated so it doesn't compete
-   with the headline. */
-.ms-hero__counter {
+/* Subtle live "N points loaded" readout + a static caption for the streaming
+   point cloud. Both sit in the bottom-left corner, over the canvas but
+   understated so they don't compete with the headline. The caption stacks just
+   above the counter and shares its exact font/weight/colour. */
+.ms-hero__counter,
+.ms-hero__caption {
   position: absolute;
   left: 1.5rem;
-  bottom: 0.85rem;
   z-index: 1;
   font-size: 0.72rem;
   font-weight: 600;
@@ -118,6 +119,131 @@
   color: rgba(255, 255, 255, 0.6);
   pointer-events: none;
   user-select: none;
+}
+
+.ms-hero__counter {
+  bottom: 0.85rem;
+}
+
+/* One line-height above the counter (anchored at its bottom, so if it wraps on a
+   narrow hero it grows upward, never over the counter). */
+.ms-hero__caption {
+  bottom: 2.1rem;
+  max-width: 24rem;
+  line-height: 1.4;
+}
+
+/* Very subtle vertical zoom slider on the hero's right edge. Drives CONFIG.zoom
+   (camera dolly) live. Faint at rest so it doesn't compete with the globe;
+   brightens when the hero (or the control itself) is hovered/focused. The native
+   range input is rotated -90deg so dragging UP zooms IN, deterministically across
+   browsers (no reliance on writing-mode range support). */
+.ms-hero__zoom {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 150px;
+  width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  opacity: 0.28;
+  transition: opacity 0.2s ease;
+}
+
+.ms-hero:hover .ms-hero__zoom,
+.ms-hero__zoom:hover,
+.ms-hero__zoom:focus-within {
+  opacity: 0.9;
+}
+
+.ms-hero__zoom input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;              /* becomes the vertical travel after the rotate */
+  height: 2px;
+  transform: rotate(-90deg);
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  outline: none;
+  cursor: ns-resize;
+}
+
+.ms-hero__zoom input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.ms-hero__zoom input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.ms-hero__zoom input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+}
+
+/* Virtual orbit joystick, bottom-right. A translucent base disc with a draggable
+   knob; the JS (hero.js) turns knob deflection into an orbit rotation velocity.
+   Subtle at rest, brightening on hero hover / while dragging (.is-active). */
+.ms-hero__joy {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  width: 84px;
+  height: 84px;
+  border-radius: 50%;
+  z-index: 1;
+  background: radial-gradient(circle at 50% 50%,
+    rgba(255, 255, 255, 0.08),
+    rgba(255, 255, 255, 0.04) 70%,
+    rgba(255, 255, 255, 0) 100%);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  opacity: 0.32;
+  transition: opacity 0.2s ease;
+  cursor: grab;
+  touch-action: none;                 /* also set in JS; belt + suspenders */
+}
+
+.ms-hero:hover .ms-hero__joy,
+.ms-hero__joy.is-active {
+  opacity: 0.92;
+}
+
+.ms-hero__joy.is-active {
+  cursor: grabbing;
+}
+
+/* The knob, centered by default; hero.js translates it from center as you drag.
+   No transition on transform so it tracks the pointer 1:1 while dragging; the
+   spring-back on release is a snap (fine for this subtle control). */
+.ms-hero__joy-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle at 40% 35%,
+    rgba(255, 255, 255, 0.92),
+    rgba(255, 255, 255, 0.6) 70%);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+  pointer-events: none;               /* the base disc captures the pointer */
 }
 
 .ms-hero__eyebrow {
@@ -172,6 +298,11 @@
 @media screen and (max-width: 44.9em) {
   .ms-hero__title.ms-hero__title {
     font-size: 1.9rem;
+  }
+  /* Too cramped on a phone; drop the zoom + joystick controls there. */
+  .ms-hero__zoom,
+  .ms-hero__joy {
+    display: none;
   }
 }
 

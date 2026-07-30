@@ -62,7 +62,12 @@ set(PROJ_INSTALL_DIR "${WASM_DEPS_INSTALL_DIR}/proj")
 
 ExternalProject_Add(proj_external
     DEPENDS sqlite_external
-    SOURCE_DIR "${WASM_DEPS_SOURCE_DIR}/proj"
+    # NOTE: the submodule path is external/PROJ (uppercase — see .gitmodules).
+    # macOS's case-insensitive filesystem lets a lowercase "proj" resolve locally,
+    # but CI's case-sensitive Linux does not, so this MUST match the real casing or
+    # configure aborts with "no download info ... source directory ... does not
+    # exist". Keep this in sync with .gitmodules.
+    SOURCE_DIR "${WASM_DEPS_SOURCE_DIR}/PROJ"
     BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/proj-build"
     BUILD_COMMAND ${CMAKE_MAKE_PROGRAM} -j${N_PROCS}
     CMAKE_ARGS

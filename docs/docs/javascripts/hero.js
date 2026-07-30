@@ -38,6 +38,16 @@ const CONFIG = {
   autoRotate: true,    // slow spin so the globe reads as 3D
   rotateSpeed: 0.08,  // radians / second — also sets the load rate (see below)
 
+  // Virtual joystick (bottom-right) — lets the viewer orbit the globe by hand.
+  // Deflecting the stick sets a rotation VELOCITY (hold to keep turning); the
+  // stick springs back to center on release and the orbit holds its position.
+  // This orbits a group ABOVE the auto-spin, so it does NOT disturb the spin that
+  // paces streaming, nor the camera framing (setViewOffset right-shift is intact).
+  joystick: true,          // show the orbit joystick when supported (pointer input)
+  joystickYawSpeed: 1.6,   // rad/s of yaw (left/right orbit) at full deflection
+  joystickPitchSpeed: 1.2, // rad/s of pitch (up/down orbit) at full deflection
+  joystickPitchLimit: 80,  // clamp pitch to ±this many degrees (avoid flipping over)
+
   // Orientation. The body's poles are on its Z axis, so we stand the globe up
   // (pole -> screen up) and spin AROUND the pole, then lean it by `axisTilt` so
   // it rotates on a slightly tilted axis like Mars (obliquity ≈ 25°). The tilt
@@ -73,8 +83,10 @@ const CONFIG = {
   // tie the load cursor to rotation: whatever wedge has rotated to the FRONT is
   // loaded, so front-facing points arrive first and one full turn loads the file.
   // Slowing rotateSpeed therefore also slows the load rate — they're the same knob.
-  maxPoints: 10000000,     // hard cap on total points streamed to the GPU (the
-                           //   source holds ~9.4M; this bounds memory + fetching)
+  maxPoints: 3000000,      // hard cap on REAL points streamed to the GPU: the
+                           //   stream STOPS once this many have loaded (source
+                           //   holds ~9.4M). Bounds memory + fetching; regions past
+                           //   the cap keep the line overview instead of real points.
   // ADAPTIVE batch size: every read costs 3 fixed HTTP round-trips (one per X/Y/Z
   // array) regardless of batch size, so per-point cost falls sharply as the batch
   // grows (~134µs/pt at 30k → ~34µs/pt at 240k). But a huge first read stalls the
@@ -665,7 +677,15 @@ function initScene(canvas, host, src) {
   spin.add(cloud);
   const orient = new THREE.Group();
   orient.add(spin);
-  scene.add(orient);
+  // userOrbit sits ABOVE orient so the joystick can orbit the whole globe (yaw +
+  // pitch) on top of the fixed pole-up tilt and the time-based auto-spin. Keeping
+  // it outside `orient`/`spin` means hand-orbit never disturbs the spin that
+  // paces streaming, and the camera stays put (framing/right-shift preserved).
+  const userOrbit = new THREE.Group();
+  userOrbit.add(orient);
+  scene.add(userOrbit);
+  let orbitYaw = 0;    // radians, accumulated from the joystick (about screen up)
+  let orbitPitch = 0;  // radians, accumulated from the joystick (about screen right)
 
   // LOD-0 overview, added to the `spin` group so it rotates with the globe.
   // Preferred: the polyline ("lines") model — geometric filaments drawn as
@@ -766,6 +786,94 @@ function initScene(canvas, host, src) {
   counterEl.className = "ms-hero__counter";
   counterEl.setAttribute("aria-hidden", "true");
   host.appendChild(counterEl);
+
+  // Static caption above the counter, sharing its exact styling (see the shared
+  // .ms-hero__counter, .ms-hero__caption rule in extra.css).
+  const captionEl = document.createElement("div");
+  captionEl.className = "ms-hero__caption";
+  captionEl.setAttribute("aria-hidden", "true");
+  captionEl.textContent = "Real-time loading of MRO CTX control network via Miniset";
+  host.appendChild(captionEl);
+
+  // --- Subtle zoom slider (right edge) ---------------------------------------
+  // A native range input (styled + rotated to vertical in extra.css) that drives
+  // CONFIG.zoom live via frame(). Dragging up zooms IN. Bounds bracket the default
+  // (CONFIG.zoom = 1.5): out to ~0.6 (whole globe with margin), in to ~4.
+  const ZOOM_MIN = 0.6, ZOOM_MAX = 4.0;
+  const zoomWrap = document.createElement("div");
+  zoomWrap.className = "ms-hero__zoom";
+  const zoomInput = document.createElement("input");
+  zoomInput.type = "range";
+  zoomInput.min = String(ZOOM_MIN);
+  zoomInput.max = String(ZOOM_MAX);
+  zoomInput.step = "0.01";
+  zoomInput.value = String(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, CONFIG.zoom)));
+  zoomInput.setAttribute("aria-label", "Zoom the globe");
+  zoomInput.setAttribute("title", "Zoom");
+  const onZoom = () => {
+    CONFIG.zoom = parseFloat(zoomInput.value) || CONFIG.zoom;
+    frame();
+  };
+  zoomInput.addEventListener("input", onZoom);
+  zoomWrap.appendChild(zoomInput);
+  host.appendChild(zoomWrap);
+
+  // --- Virtual orbit joystick (bottom-right) ---------------------------------
+  // A base disc + a draggable knob. Dragging the knob deflects it (clamped to the
+  // base radius); the normalized deflection [jx,jy] ∈ [-1,1]² becomes a rotation
+  // VELOCITY applied each frame (see tick): x → yaw, y → pitch. On release the
+  // knob springs back to center and deflection goes to zero, so the orbit holds.
+  // Pointer Events cover mouse + touch + pen with one code path.
+  let jx = 0, jy = 0;             // current normalized deflection, read by tick()
+  let jActive = false;            // a drag is in progress
+  const joyWrap = document.createElement("div");
+  joyWrap.className = "ms-hero__joy";
+  joyWrap.setAttribute("aria-hidden", "true");
+  const joyKnob = document.createElement("div");
+  joyKnob.className = "ms-hero__joy-knob";
+  joyWrap.appendChild(joyKnob);
+  host.appendChild(joyWrap);
+  if (!CONFIG.joystick) joyWrap.style.display = "none";
+
+  // Deflect the knob to a pointer position (client coords), clamped to the base
+  // radius, and update [jx,jy]. y is inverted so pushing UP pitches the top of the
+  // globe toward the viewer (natural "look up") rather than away.
+  function joySet(clientX, clientY) {
+    const r = joyWrap.getBoundingClientRect();
+    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+    const maxR = r.width / 2 - 10;                    // knob travel radius (px)
+    let dx = clientX - cx, dy = clientY - cy;
+    const d = Math.hypot(dx, dy);
+    if (d > maxR && d > 0) { dx = (dx / d) * maxR; dy = (dy / d) * maxR; }
+    joyKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
+    jx = maxR > 0 ? dx / maxR : 0;
+    jy = maxR > 0 ? dy / maxR : 0;
+  }
+  function joyReset() {
+    jActive = false; jx = 0; jy = 0;
+    joyKnob.style.transform = "translate(-50%, -50%)";
+    joyWrap.classList.remove("is-active");
+  }
+  const onJoyDown = (e) => {
+    jActive = true;
+    joyWrap.classList.add("is-active");
+    try { joyWrap.setPointerCapture(e.pointerId); } catch (_) {}
+    joySet(e.clientX, e.clientY);
+    e.preventDefault();
+  };
+  const onJoyMove = (e) => { if (jActive) { joySet(e.clientX, e.clientY); e.preventDefault(); } };
+  const onJoyUp = (e) => {
+    if (!jActive) return;
+    try { joyWrap.releasePointerCapture(e.pointerId); } catch (_) {}
+    joyReset();
+  };
+  joyWrap.addEventListener("pointerdown", onJoyDown);
+  joyWrap.addEventListener("pointermove", onJoyMove);
+  joyWrap.addEventListener("pointerup", onJoyUp);
+  joyWrap.addEventListener("pointercancel", onJoyUp);
+  // Never scroll/gesture the page while dragging on touch.
+  joyWrap.style.touchAction = "none";
+
   const numFmt = new Intl.NumberFormat();
   // Sample the load rate on a fixed interval and smooth it (EMA) so the readout
   // shows a steady points/second rather than per-frame jitter.
@@ -783,8 +891,8 @@ function initScene(canvas, host, src) {
       rateSampleLoaded = loaded;
     }
     // Once fully loaded, the rate is meaningless — drop it.
-    const rateStr = loaded >= target || rate < 1 ? "" : ` · ${numFmt.format(Math.round(rate))}/s`;
-    const text = `${numFmt.format(loaded)} points${rateStr}`;
+    const rateStr = loaded >= target || rate < 1 ? "" : ` · ${numFmt.format(Math.round(rate))}p/s`;
+    const text = `${numFmt.format(loaded)} points (capped to 3m) ${rateStr}`;
     if (text === lastText) return;   // only touch the DOM when it changes
     lastText = text;
     counterEl.textContent = text;
@@ -884,6 +992,13 @@ function initScene(canvas, host, src) {
     const K = overview.count | 0;
     if (itemCursor >= K) { done = true; return; }
 
+    // Real-point cap: once maxPoints have streamed in, STOP. `target` is already
+    // min(total, maxPoints), and filament windows tile [0,total) in ascending
+    // rangeStart order, so once we've filled [0,target) no later line adds real
+    // points — halt now instead of spinning the skip-loop over beyond-cap items
+    // every frame. Regions past the cap keep showing the line overview.
+    if (loaded >= target) { done = true; return; }
+
     // Fetch budget: stop after `loadTurns` full rotations (0 = unlimited). A user
     // who never zooms then never pays to fetch the whole cloud.
     if (CONFIG.loadTurns > 0 && swept >= CONFIG.loadTurns * 2 * Math.PI) { done = true; return; }
@@ -968,11 +1083,26 @@ function initScene(canvas, host, src) {
     .catch((err) => { console.warn("[Miniset hero] point stream open failed:", err); });
 
   let raf = 0;
+  let lastFrameMs = 0;
   function tick(now) {
+    const dt = lastFrameMs ? Math.min(0.05, (now - lastFrameMs) / 1000) : 0;  // clamp tab-switch jumps
+    lastFrameMs = now;
     swept = CONFIG.autoRotate ? (now / 1000) * CONFIG.rotateSpeed : swept;
     // Spin about the body's pole (Z). `orient` leans this axis, so the globe
     // turns on a tilted, pole-up axis rather than with the poles on the side.
     spin.rotation.z = swept;
+
+    // Hand-orbit: integrate the joystick deflection into yaw/pitch (velocity ×
+    // dt), then set the userOrbit group's rotation (yaw about screen-up Y, pitch
+    // about screen-right X). Pitch is clamped so you can't tumble past the poles.
+    if (jx !== 0 || jy !== 0) {
+      orbitYaw += jx * CONFIG.joystickYawSpeed * dt;
+      orbitPitch += -jy * CONFIG.joystickPitchSpeed * dt;
+      const lim = THREE.MathUtils.degToRad(CONFIG.joystickPitchLimit);
+      orbitPitch = Math.max(-lim, Math.min(lim, orbitPitch));
+    }
+    userOrbit.rotation.set(orbitPitch, orbitYaw, 0, "YXZ");
+
     if (hasOverview) pumpOverview(now); else pumpBatch(now);
     material.uniforms.uTime.value = now / 1000;
     if (gmm) gmm.mat.uniforms.uTime.value = now / 1000;          // GMM fade-out
@@ -1015,12 +1145,23 @@ function initScene(canvas, host, src) {
       }
       applyRenderEdge();
       applyOrientation();
+      // Keep the slider in sync if zoom was changed from the console.
+      zoomInput.value = String(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, CONFIG.zoom)));
+      joyWrap.style.display = CONFIG.joystick ? "" : "none";
       frame();
     },
     dispose() {
       cancelAnimationFrame(raf);
       ro.disconnect();
       counterEl.remove();
+      captionEl.remove();
+      zoomInput.removeEventListener("input", onZoom);
+      zoomWrap.remove();
+      joyWrap.removeEventListener("pointerdown", onJoyDown);
+      joyWrap.removeEventListener("pointermove", onJoyMove);
+      joyWrap.removeEventListener("pointerup", onJoyUp);
+      joyWrap.removeEventListener("pointercancel", onJoyUp);
+      joyWrap.remove();
       geom.dispose();
       material.dispose();
       if (gmm) { gmm.points.geometry.dispose(); gmm.mat.dispose(); }
@@ -1033,19 +1174,43 @@ function initScene(canvas, host, src) {
   };
 }
 
+// The canvas node we've initialized (or are mid-initializing). Material's instant
+// navigation re-emits document$ — and thus re-runs boot() — on every navigation,
+// INCLUDING in-page anchor clicks like the "Try the playground below" (#playground)
+// button. Those don't replace the DOM, so the hero canvas is the SAME node; we must
+// NOT tear the live render down and rebuild (that's what blanked it and reset the
+// stream to 0). We only rebuild when the canvas is a genuinely new element (a real
+// page content swap). Claimed synchronously below so a re-fire during the initial
+// multi-second openStream() can't start a second stream.
+let heroCanvas = null;
+
 async function boot() {
   const host = document.querySelector("[data-ms-hero]");
   const canvas = host && host.querySelector("[data-ms-hero-canvas]");
-  if (!host || !canvas) return;
 
-  // Guard against double-init across Material's instant navigation.
+  // Navigated to a page with no hero: tear down any live render so it doesn't keep
+  // rendering to a now-detached canvas (and holding the point handle open).
+  if (!host || !canvas) {
+    if (window.msHero) { window.msHero.dispose(); window.msHero = null; }
+    heroCanvas = null;
+    return;
+  }
+
+  // Same canvas we already own (or are initializing) → leave the running render
+  // alone. This is the fix: instant-nav / same-page clicks no longer blank it.
+  if (heroCanvas === canvas) return;
+
+  // A genuinely new canvas (real content swap): dispose the old render first.
   if (window.msHero) { window.msHero.dispose(); window.msHero = null; }
+  heroCanvas = canvas;   // claim BEFORE the await so a re-entrant boot() no-ops
 
   try {
     const src = await openStream();
+    if (heroCanvas !== canvas) return;   // superseded while awaiting — abandon
     initScene(canvas, host, src);
     host.setAttribute("data-ms-hero-ready", "true");
   } catch (err) {
+    if (heroCanvas === canvas) heroCanvas = null;   // let a later emit retry
     // Non-fatal: the hero still shows its gradient + text without the render.
     console.warn("[Miniset hero] point render unavailable:", err);
   }
