@@ -197,53 +197,56 @@
   border-radius: 2px;
 }
 
-/* Virtual orbit joystick, bottom-right. A translucent base disc with a draggable
-   knob; the JS (hero.js) turns knob deflection into an orbit rotation velocity.
+/* Virtual orbit trackpad, bottom-right. A small translucent pad you drag on to
+   spin the globe; the JS (hero.js) maps the pointer's movement to orbit rotation.
    Subtle at rest, brightening on hero hover / while dragging (.is-active). */
-.ms-hero__joy {
+.ms-hero__pad {
   position: absolute;
   right: 1.25rem;
   bottom: 1.25rem;
-  width: 84px;
-  height: 84px;
-  border-radius: 50%;
+  width: 104px;
+  height: 72px;
+  border-radius: 12px;
   z-index: 1;
-  background: radial-gradient(circle at 50% 50%,
-    rgba(255, 255, 255, 0.08),
-    rgba(255, 255, 255, 0.04) 70%,
-    rgba(255, 255, 255, 0) 100%);
+  background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.22);
+  /* faint inset so it reads as a recessed pad surface */
+  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.05);
   opacity: 0.32;
   transition: opacity 0.2s ease;
   cursor: grab;
   touch-action: none;                 /* also set in JS; belt + suspenders */
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.ms-hero:hover .ms-hero__joy,
-.ms-hero__joy.is-active {
+.ms-hero:hover .ms-hero__pad,
+.ms-hero__pad.is-active {
   opacity: 0.92;
 }
 
-.ms-hero__joy.is-active {
+.ms-hero__pad.is-active {
   cursor: grabbing;
 }
 
-/* The knob, centered by default; hero.js translates it from center as you drag.
-   No transition on transform so it tracks the pointer 1:1 while dragging; the
-   spring-back on release is a snap (fine for this subtle control). */
-.ms-hero__joy-knob {
+/* PS5-style dot matrix on the pad face: an even grid of small dots via a repeating
+   radial-gradient. Inset from the edges and masked so the grid fades out toward the
+   border (reads as a touch surface, not a hard-edged texture). Pointer-inert so the
+   pad itself captures the drag. */
+.ms-hero__pad::before {
+  content: "";
   position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  transform: translate(-50%, -50%);
-  background: radial-gradient(circle at 40% 35%,
-    rgba(255, 255, 255, 0.92),
-    rgba(255, 255, 255, 0.6) 70%);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
-  pointer-events: none;               /* the base disc captures the pointer */
+  inset: 10px;
+  border-radius: 8px;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.75) 1.1px, transparent 1.3px);
+  background-size: 12px 12px;
+  background-position: center;
+  /* fade the dots out toward the pad edges */
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 55%, transparent 100%);
+  mask-image: radial-gradient(ellipse at center, #000 55%, transparent 100%);
+  opacity: 0.85;
 }
 
 .ms-hero__eyebrow {
@@ -299,9 +302,9 @@
   .ms-hero__title.ms-hero__title {
     font-size: 1.9rem;
   }
-  /* Too cramped on a phone; drop the zoom + joystick controls there. */
+  /* Too cramped on a phone; drop the zoom + trackpad controls there. */
   .ms-hero__zoom,
-  .ms-hero__joy {
+  .ms-hero__pad {
     display: none;
   }
 }

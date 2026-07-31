@@ -38,15 +38,16 @@ const CONFIG = {
   autoRotate: true,    // slow spin so the globe reads as 3D
   rotateSpeed: 0.08,  // radians / second — also sets the load rate (see below)
 
-  // Virtual joystick (bottom-right) — lets the viewer orbit the globe by hand.
-  // Deflecting the stick sets a rotation VELOCITY (hold to keep turning); the
-  // stick springs back to center on release and the orbit holds its position.
-  // This orbits a group ABOVE the auto-spin, so it does NOT disturb the spin that
-  // paces streaming, nor the camera framing (setViewOffset right-shift is intact).
-  joystick: true,          // show the orbit joystick when supported (pointer input)
-  joystickYawSpeed: 1.6,   // rad/s of yaw (left/right orbit) at full deflection
-  joystickPitchSpeed: 1.2, // rad/s of pitch (up/down orbit) at full deflection
-  joystickPitchLimit: 80,  // clamp pitch to ±this many degrees (avoid flipping over)
+  // Virtual trackpad (bottom-right) — a mini touchpad you drag on to orbit the
+  // globe by hand. Dragging maps the pointer's MOVEMENT directly to rotation
+  // (Δx → yaw, Δy → pitch), so it feels like spinning the sphere with a finger;
+  // it only rotates while the pointer is held down INSIDE the pad. This orbits a
+  // group ABOVE the auto-spin, so it does NOT disturb the spin that paces
+  // streaming, nor the camera framing (setViewOffset right-shift is intact).
+  trackpad: true,          // show the orbit trackpad when supported (pointer input)
+  trackpadSensitivity: 0.9,// radians of orbit per 1 pad-width of pointer travel
+                           // (orbit is a gimbal-lock-free quaternion trackball, so
+                           //  there's no pitch limit — the globe can tumble fully)
 
   // Orientation. The body's poles are on its Z axis, so we stand the globe up
   // (pole -> screen up) and spin AROUND the pole, then lean it by `axisTilt` so
@@ -133,6 +134,22 @@ const CONFIG = {
   gmmFadeOutMs: 900,       // how long a splat's synthetic points take to fade out
                            //   once its real points arrive
 
+  // Placeholder globe — a low-density REGULAR point grid on the Mars ellipsoid,
+  // shown from the first frame (no network) so the viewport is never empty while
+  // the overview layer is being opened/streamed. It fades out the moment the
+  // overview (lines/GMM) is ready and rendered. Styled to match the overview
+  // (same colour/opacity/fog), just sparser, so the handoff is seamless.
+  showPlaceholder: true,     // draw the regular ellipsoid grid until the overview lands
+  placeholderRings: 256,      // number of latitude rings pole-to-pole (grid density)
+  placeholderColor: 0x8fb7ff,// match lineColor/gmmColor for a seamless handoff
+  placeholderOpacity: 0.9,   // brightness (additive), a touch under the overview
+  placeholderDotSize: 1.5,   // on-screen diameter of a grid point (device px)
+  placeholderFadeOutMs: 700, // fade-out once the overview is ready and displayed
+  // Mars IAU biaxial ellipsoid radii (metres) the grid is generated on; matches
+  // the net's on-ellipsoid line model (a = equatorial, c = polar).
+  placeholderRadiusA: 3396190,
+  placeholderRadiusC: 3376200,
+
   // Backdrop.
   clearAlpha: 0.0,     // 0 = transparent (the CSS gradient shows through)
 };
@@ -175,50 +192,54 @@ function loadMiniset() {
 async function openStream() {
   const Miniset = await loadMiniset();
   // Every StarDS call over /vsicurl SUSPENDS (ASYNCIFY → returns a Promise we
-  // await). Each StarDataset open() reads the file's whole header/index up front
-  // (~10-15 MB for this net), so opening the net MORE THAN ONCE serially — as the
-  // old order did (openPointsXYZ then openLines) — doubled the ~15s pre-render
-  // wait. So: open the OVERVIEW first and return it immediately, and open the
-  // point-stream handle CONCURRENTLY (its Promise resolves in the background). The
-  // banner then renders the overview after ~one open instead of blocking on two.
+  // await), and ASYNCIFY allows only ONE suspension in flight — so the overview
+  // open and the point-stream open must be strictly SERIAL (never overlapping).
+  //
+  // We hand back both as PROMISES rather than blocking here, so initScene can
+  // render the PLACEHOLDER globe from the first frame (no network) while these
+  // load. `overviewReady` resolves with {lines, summary}; `ready` (the point
+  // stream) is CHAINED off overviewReady so its open only starts once the overview
+  // open has fully completed — preserving the single-suspension invariant.
 
   // --- Overview (preferred: polyline "lines" layer; fallback: GMM "summary"). --
-  let lines = null, summary = null;
-  try {
-    if (typeof Miniset.openLines === "function") {
-      const lh = await Miniset.openLines(STARDS_URL);
-      const L = await Miniset.linesCount(lh);
-      if (L > 0) lines = await Miniset.linesReadAll(lh);
-      await Miniset.closeLines(lh);
-    }
-  } catch (err) {
-    console.warn("[Miniset hero] lines layer unavailable:", err);
-    lines = null;
-  }
-  if (!lines) {
+  const overviewReady = (async () => {
+    let lines = null, summary = null;
     try {
-      if (typeof Miniset.openSummary === "function") {
-        const sh = await Miniset.openSummary(STARDS_URL);
-        const k = await Miniset.summaryCount(sh);
-        if (k > 0) summary = await Miniset.summaryReadSplats(sh);
-        await Miniset.closeSummary(sh);
+      if (typeof Miniset.openLines === "function") {
+        const lh = await Miniset.openLines(STARDS_URL);
+        const L = await Miniset.linesCount(lh);
+        if (L > 0) lines = await Miniset.linesReadAll(lh);
+        await Miniset.closeLines(lh);
       }
     } catch (err) {
-      console.warn("[Miniset hero] summary unavailable, streaming without LOD:", err);
-      summary = null;
+      console.warn("[Miniset hero] lines layer unavailable:", err);
+      lines = null;
     }
-  }
+    if (!lines) {
+      try {
+        if (typeof Miniset.openSummary === "function") {
+          const sh = await Miniset.openSummary(STARDS_URL);
+          const k = await Miniset.summaryCount(sh);
+          if (k > 0) summary = await Miniset.summaryReadSplats(sh);
+          await Miniset.closeSummary(sh);
+        }
+      } catch (err) {
+        console.warn("[Miniset hero] summary unavailable, streaming without LOD:", err);
+        summary = null;
+      }
+    }
+    return { lines, summary };
+  })();
 
-  // --- Point stream: open lazily (its own big index read) AFTER the overview is
-  // in hand, and hand back a PROMISE so the render can start on the overview
-  // before this resolves. The pump awaits `ready` before its first read.
-  const ready = (async () => {
+  // --- Point stream: opened AFTER the overview open completes (single-suspension),
+  // handed back as a promise so the pump can await it before its first read.
+  const ready = overviewReady.then(async () => {
     const handle = await Miniset.openPointsXYZ(STARDS_URL);
     const total = await Miniset.pointsCount(handle);
     return { handle, total };
-  })();
+  });
 
-  return { Miniset, summary, lines, ready };
+  return { Miniset, overviewReady, ready };
 }
 
 /**
@@ -338,6 +359,106 @@ function mulberry32(a) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * Build the PLACEHOLDER globe: a low-density REGULAR point grid on the Mars
+ * biaxial ellipsoid, on the surface only. Shown from the first frame (it needs no
+ * network) so the viewport is populated while the overview layer opens/streams,
+ * then faded out once the overview is ready. Styled to match the overview (colour,
+ * opacity, fog/depth cue), just sparser.
+ *
+ * The grid is regular in (lat,lon): `placeholderRings` latitude rings pole-to-pole,
+ * and per ring the number of longitude points scales with cos(lat) so the surface
+ * density stays roughly even instead of bunching at the poles. Points sit exactly
+ * on the ellipsoid: x=a·cosφ·cosλ, y=a·cosφ·sinλ, z=c·sinφ (BCBF, same frame as
+ * the real points / line vertices). A single `uFade` uniform (set when the overview
+ * arrives) crossfades the whole grid out at once.
+ * @returns {{ points: THREE.Points, mat, fadeOut(tSec) }}
+ */
+function makePlaceholderGlobe(pixelRatio) {
+  const rings = Math.max(4, CONFIG.placeholderRings | 0);
+  const A = CONFIG.placeholderRadiusA, C = CONFIG.placeholderRadiusC;
+  // Longitude points on the equator ring; other rings scale by cos(lat). ~2× rings
+  // gives near-square cells at the equator.
+  const equatorLon = Math.max(8, Math.round(rings * 2));
+
+  // Pass 1: build the vertex list. Rings run from just off the south pole to just
+  // off the north pole (open interval) so we don't stack many points on the poles.
+  const xyz = [];
+  for (let r = 0; r < rings; r++) {
+    const lat = -Math.PI / 2 + Math.PI * ((r + 0.5) / rings);  // (-90°,+90°) centres
+    const cosLat = Math.cos(lat), sinLat = Math.sin(lat);
+    const nLon = Math.max(1, Math.round(equatorLon * cosLat));
+    for (let k = 0; k < nLon; k++) {
+      const lon = (2 * Math.PI * k) / nLon;
+      xyz.push(A * cosLat * Math.cos(lon), A * cosLat * Math.sin(lon), C * sinLat);
+    }
+  }
+  const pos = new Float32Array(xyz);
+
+  const geom = new THREE.BufferGeometry();
+  geom.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+
+  const mat = new THREE.ShaderMaterial({
+    // Same look as the line overview: additive round sprites with the distance-fog
+    // depth cue. `uFade` ∈ [0,1] scales the whole grid out (1 = gone). uNearZ/uFarZ
+    // set per frame from the camera, exactly like the other overlays.
+    transparent: true,
+    depthWrite: false,
+    depthTest: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: {
+      uColor: { value: new THREE.Color(CONFIG.placeholderColor) },
+      uOpacity: { value: CONFIG.placeholderOpacity },
+      uFade: { value: 0 },     // 0 = fully visible, 1 = faded out
+      uSize: { value: CONFIG.placeholderDotSize },
+      uPixelRatio: { value: pixelRatio },
+      uFogColor: { value: new THREE.Color(CONFIG.fogColor) },
+      uFogStrength: { value: CONFIG.fogStrength },
+      uFogFalloff: { value: CONFIG.fogFalloff },
+      uNearZ: { value: 1.0 },
+      uFarZ: { value: -1.0 },
+    },
+    vertexShader: /* glsl */ `
+      uniform float uSize, uPixelRatio, uNearZ, uFarZ, uFade;
+      varying float vDepth;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * mv;
+        vDepth = clamp((mv.z - uFarZ) / max(uNearZ - uFarZ, 1e-3), 0.0, 1.0);
+        float depthSize = 0.85 + 0.15 * vDepth;
+        gl_PointSize = uFade >= 1.0 ? 0.0 : uSize * uPixelRatio * depthSize;
+      }
+    `,
+    fragmentShader: /* glsl */ `
+      uniform vec3 uColor, uFogColor;
+      uniform float uOpacity, uFogStrength, uFogFalloff, uFade;
+      varying float vDepth;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        if (dot(d, d) > 0.25) discard;          // round sprite
+        float vis = 1.0 - uFade;
+        if (vis <= 0.0) discard;
+        float fog = pow(1.0 - vDepth, uFogFalloff) * uFogStrength;
+        vec3 rgb = mix(uColor, uFogColor, fog);
+        float bright = uOpacity * vis * (1.0 - 0.85 * fog);
+        gl_FragColor = vec4(rgb * bright, 1.0);  // additive (premultiplied)
+      }
+    `,
+  });
+
+  const points = new THREE.Points(geom, mat);
+  points.frustumCulled = false;
+
+  // Crossfade the whole grid out starting at tSeconds; the tick loop advances
+  // uFade from the stored start using uTime. We store the start on the material.
+  let fadeStart = -1;
+  function fadeOut(tSeconds) { if (fadeStart < 0) fadeStart = tSeconds; }
+  // Expose the fade start so the tick loop can ramp uFade over placeholderFadeOutMs.
+  points.userData.getFadeStart = () => fadeStart;
+
+  return { points, mat, fadeOut };
 }
 
 /**
@@ -620,7 +741,7 @@ function makeGmmCloud(splats, pixelRatio) {
  * point cloud in from `src` over time.
  * @param {HTMLCanvasElement} canvas
  * @param {HTMLElement} host
- * @param {{Miniset: any, handle: number, total: number, summary: object|null}} src
+ * @param {{Miniset: any, overviewReady: Promise<{lines,summary}>, ready: Promise<{handle,total}>}} src
  */
 function initScene(canvas, host, src) {
   const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
@@ -630,20 +751,16 @@ function initScene(canvas, host, src) {
 
   const scene = new THREE.Scene();
 
-  // The point-stream handle opens in the background (src.ready); until it lands
-  // `pointHandle` is null and the pump no-ops, but the OVERVIEW renders right
-  // away. `total` is the real point count once known; `target` is bounded by
-  // maxPoints. We size buffers to the overview's covered points if available
-  // (upper-bounds the stream) else to maxPoints.
+  // Both the overview and the point-stream handle open in the BACKGROUND
+  // (src.overviewReady, src.ready). Until the overview resolves we render only the
+  // placeholder globe; until the point handle lands the pump no-ops. Because
+  // src.ready is chained AFTER src.overviewReady, `pointHandle` can't be set before
+  // the overview overlay is built — so the pumps never run without an overview in
+  // place. We don't know the overview's point-coverage bound yet, so size the
+  // streaming buffers to the hard cap (always an upper bound on
+  // target = min(total, maxPoints)); `target` is tightened once the overview lands.
   let pointHandle = null;
-  let total = CONFIG.maxPoints;
-  if (src.lines && src.lines.count) {
-    // rangeStart[last]+rangeCount[last] bounds the points the lines cover.
-    const L = src.lines.count | 0;
-    total = (src.lines.rangeStart[L - 1] >>> 0) + (src.lines.rangeCount[L - 1] >>> 0);
-  }
-  // How many points we will ultimately stream in.
-  const target = Math.min(total, CONFIG.maxPoints);
+  let target = CONFIG.maxPoints;
 
   // Preallocate the GPU buffers once; batches fill regions of them over time.
   const positions = new Float32Array(target * 3);
@@ -677,32 +794,44 @@ function initScene(canvas, host, src) {
   spin.add(cloud);
   const orient = new THREE.Group();
   orient.add(spin);
-  // userOrbit sits ABOVE orient so the joystick can orbit the whole globe (yaw +
+  // userOrbit sits ABOVE orient so the trackpad can orbit the whole globe (yaw +
   // pitch) on top of the fixed pole-up tilt and the time-based auto-spin. Keeping
   // it outside `orient`/`spin` means hand-orbit never disturbs the spin that
   // paces streaming, and the camera stays put (framing/right-shift preserved).
   const userOrbit = new THREE.Group();
   userOrbit.add(orient);
   scene.add(userOrbit);
-  let orbitYaw = 0;    // radians, accumulated from the joystick (about screen up)
-  let orbitPitch = 0;  // radians, accumulated from the joystick (about screen right)
+  // Hand-orbit is stored as a QUATERNION accumulated incrementally about the world
+  // screen axes (trackball) — NOT Euler yaw/pitch. This is gimbal-lock free: there
+  // is no pole singularity and no axis can collapse onto another, so the globe can
+  // tumble to any orientation and keep dragging smoothly. (Reusable temps below
+  // avoid per-move allocation.)
+  const orbitQuat = new THREE.Quaternion();
+  const _dq = new THREE.Quaternion();
+  const _axisX = new THREE.Vector3(1, 0, 0);   // screen right
+  const _axisY = new THREE.Vector3(0, 1, 0);   // screen up
 
-  // LOD-0 overview, added to the `spin` group so it rotates with the globe.
-  // Preferred: the polyline ("lines") model — geometric filaments drawn as
-  // ribbons immediately, each fading out as its real points stream in. Fallback:
-  // the GMM synthetic cloud. Both present only if the corresponding layer exists.
-  const hasLines = CONFIG.showLines && src.lines && (src.lines.count | 0) > 0;
-  const hasSummary = !hasLines && CONFIG.showSplats && src.summary && (src.summary.count | 0) > 0;
+  // PLACEHOLDER globe — a low-density regular grid on the Mars ellipsoid, drawn
+  // from the FIRST frame (no network) so the viewport is never empty while the
+  // overview layer opens/streams. Added to `spin` so it rotates with the globe.
+  // It fades out the instant the overview overlay is built (see overviewReady).
+  let placeholder = null;   // { points, mat, fadeOut }
+  if (CONFIG.showPlaceholder) {
+    placeholder = makePlaceholderGlobe(pixelRatio);
+    placeholder.points.renderOrder = -2;   // behind the overview and real points
+    spin.add(placeholder.points);
+  }
+
+  // LOD-0 overview, added to the `spin` group so it rotates with the globe. Built
+  // LATER, when src.overviewReady resolves (see below) — until then the placeholder
+  // stands in. Preferred: the polyline ("lines") model — filaments drawn as
+  // ribbons, each fading out as its real points stream in. Fallback: the GMM
+  // synthetic cloud. Both present only if the corresponding layer exists.
+  let overview = null;      // the overview data ({lines}|{summary}) once resolved
+  let overviewSettled = false;   // true once overviewReady resolves (present or not)
+  let hasLines = false, hasSummary = false;
   let lineOverlay = null;   // { points, mat, markLineArrived }
   let gmm = null;           // { points, mat, markSplatArrived }
-  if (hasLines) {
-    lineOverlay = makeLineMesh(src.lines, pixelRatio);
-    lineOverlay.points.renderOrder = -1;   // draw before the real points
-    spin.add(lineOverlay.points);
-  } else if (hasSummary) {
-    gmm = makeGmmCloud(src.summary, pixelRatio);
-    if (gmm) { gmm.points.renderOrder = -1; spin.add(gmm.points); }
-  }
 
   /** Point the spin axis (body Z) up and lean it by CONFIG.axisTilt. Rebuilt from
    *  CONFIG so the tilt is tunable live via msHero.apply(). */
@@ -770,9 +899,15 @@ function initScene(canvas, host, src) {
     const D = camera.position.z;
     material.uniforms.uNearZ.value = radius - D;
     material.uniforms.uFarZ.value = -radius - D;
+    // Overlays share the same depth bounds so their fog matches the points. Each
+    // may be null (not yet built / already faded), so guard.
     if (lineOverlay) {
       lineOverlay.mat.uniforms.uNearZ.value = radius - D;
       lineOverlay.mat.uniforms.uFarZ.value = -radius - D;
+    }
+    if (placeholder) {
+      placeholder.mat.uniforms.uNearZ.value = radius - D;
+      placeholder.mat.uniforms.uFarZ.value = -radius - D;
     }
   }
   frame();
@@ -818,61 +953,64 @@ function initScene(canvas, host, src) {
   zoomWrap.appendChild(zoomInput);
   host.appendChild(zoomWrap);
 
-  // --- Virtual orbit joystick (bottom-right) ---------------------------------
-  // A base disc + a draggable knob. Dragging the knob deflects it (clamped to the
-  // base radius); the normalized deflection [jx,jy] ∈ [-1,1]² becomes a rotation
-  // VELOCITY applied each frame (see tick): x → yaw, y → pitch. On release the
-  // knob springs back to center and deflection goes to zero, so the orbit holds.
-  // Pointer Events cover mouse + touch + pen with one code path.
-  let jx = 0, jy = 0;             // current normalized deflection, read by tick()
-  let jActive = false;            // a drag is in progress
-  const joyWrap = document.createElement("div");
-  joyWrap.className = "ms-hero__joy";
-  joyWrap.setAttribute("aria-hidden", "true");
-  const joyKnob = document.createElement("div");
-  joyKnob.className = "ms-hero__joy-knob";
-  joyWrap.appendChild(joyKnob);
-  host.appendChild(joyWrap);
-  if (!CONFIG.joystick) joyWrap.style.display = "none";
+  // --- Virtual orbit trackpad (bottom-right) ---------------------------------
+  // A small pad you drag on to spin the globe by hand. Dragging maps the pointer's
+  // MOVEMENT directly to rotation — Δx → yaw, Δy → pitch, scaled so one pad-width
+  // of travel ≈ trackpadSensitivity radians — so it reads like pushing the sphere
+  // with a finger. It rotates ONLY while the pointer is held down inside the pad
+  // (pointer capture keeps the drag alive if you slide off the edge). Pointer
+  // Events cover mouse + touch + pen with one code path. Accumulates into the
+  // orbitQuat trackball quaternion (gimbal-lock free) — see onPadMove.
+  let padActive = false;          // a drag is in progress
+  let padLastX = 0, padLastY = 0; // previous pointer position (client px)
+  const padWrap = document.createElement("div");
+  padWrap.className = "ms-hero__pad";
+  padWrap.setAttribute("aria-hidden", "true");
+  // The pad face is a PS5-style dot-matrix, drawn purely in CSS (see .ms-hero__pad
+  // ::before in extra.css) — no label element needed.
+  host.appendChild(padWrap);
+  if (!CONFIG.trackpad) padWrap.style.display = "none";
 
-  // Deflect the knob to a pointer position (client coords), clamped to the base
-  // radius, and update [jx,jy]. y is inverted so pushing UP pitches the top of the
-  // globe toward the viewer (natural "look up") rather than away.
-  function joySet(clientX, clientY) {
-    const r = joyWrap.getBoundingClientRect();
-    const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-    const maxR = r.width / 2 - 10;                    // knob travel radius (px)
-    let dx = clientX - cx, dy = clientY - cy;
-    const d = Math.hypot(dx, dy);
-    if (d > maxR && d > 0) { dx = (dx / d) * maxR; dy = (dy / d) * maxR; }
-    joyKnob.style.transform = `translate(calc(-50% + ${dx}px), calc(-50% + ${dy}px))`;
-    jx = maxR > 0 ? dx / maxR : 0;
-    jy = maxR > 0 ? dy / maxR : 0;
-  }
-  function joyReset() {
-    jActive = false; jx = 0; jy = 0;
-    joyKnob.style.transform = "translate(-50%, -50%)";
-    joyWrap.classList.remove("is-active");
-  }
-  const onJoyDown = (e) => {
-    jActive = true;
-    joyWrap.classList.add("is-active");
-    try { joyWrap.setPointerCapture(e.pointerId); } catch (_) {}
-    joySet(e.clientX, e.clientY);
+  const onPadDown = (e) => {
+    padActive = true;
+    padLastX = e.clientX; padLastY = e.clientY;
+    padWrap.classList.add("is-active");
+    try { padWrap.setPointerCapture(e.pointerId); } catch (_) {}
     e.preventDefault();
   };
-  const onJoyMove = (e) => { if (jActive) { joySet(e.clientX, e.clientY); e.preventDefault(); } };
-  const onJoyUp = (e) => {
-    if (!jActive) return;
-    try { joyWrap.releasePointerCapture(e.pointerId); } catch (_) {}
-    joyReset();
+  const onPadMove = (e) => {
+    if (!padActive) return;
+    // Scale by pad width so sensitivity is resolution-independent: dragging across
+    // the whole pad turns the globe by ~trackpadSensitivity radians.
+    const w = padWrap.getBoundingClientRect().width || 1;
+    const k = CONFIG.trackpadSensitivity / w;
+    const dYaw = (e.clientX - padLastX) * k;         // drag right → globe yaws right
+    const dPitch = (e.clientY - padLastY) * k;       // drag down → top tips toward you
+    // Compose incremental rotations about the WORLD screen axes and PRE-multiply
+    // the accumulated orbit quaternion (world-space trackball). Using fixed world
+    // axes — not the globe's current local axes — keeps drag direction intuitive
+    // regardless of orientation, and quaternions have no gimbal lock, so there's
+    // no pitch clamp needed: the globe can tumble fully over the poles.
+    _dq.setFromAxisAngle(_axisY, dYaw);
+    orbitQuat.premultiply(_dq);
+    _dq.setFromAxisAngle(_axisX, dPitch);
+    orbitQuat.premultiply(_dq);
+    orbitQuat.normalize();                           // guard against drift over many moves
+    padLastX = e.clientX; padLastY = e.clientY;
+    e.preventDefault();
   };
-  joyWrap.addEventListener("pointerdown", onJoyDown);
-  joyWrap.addEventListener("pointermove", onJoyMove);
-  joyWrap.addEventListener("pointerup", onJoyUp);
-  joyWrap.addEventListener("pointercancel", onJoyUp);
+  const onPadUp = (e) => {
+    if (!padActive) return;
+    padActive = false;
+    padWrap.classList.remove("is-active");
+    try { padWrap.releasePointerCapture(e.pointerId); } catch (_) {}
+  };
+  padWrap.addEventListener("pointerdown", onPadDown);
+  padWrap.addEventListener("pointermove", onPadMove);
+  padWrap.addEventListener("pointerup", onPadUp);
+  padWrap.addEventListener("pointercancel", onPadUp);
   // Never scroll/gesture the page while dragging on touch.
-  joyWrap.style.touchAction = "none";
+  padWrap.style.touchAction = "none";
 
   const numFmt = new Intl.NumberFormat();
   // Sample the load rate on a fixed interval and smooth it (EMA) so the readout
@@ -961,6 +1099,9 @@ function initScene(canvas, host, src) {
         loaded = start + got;
         geom.setDrawRange(0, loaded);
         if (loaded >= target) done = true;
+        // No overview overlay in this path — the placeholder was the standing
+        // view, so fade it out now that real points are arriving.
+        if (placeholder) placeholder.fadeOut(now);
       })
       .catch((err) => { done = true; console.warn("[Miniset hero] stream read failed:", err); })
       .finally(() => { inFlight = false; });
@@ -980,10 +1121,11 @@ function initScene(canvas, host, src) {
   // ~streamBatchSize points, then mark every covered item arrived. Items are
   // contiguous in file order, so a run of them is a single window (any gap points
   // in between are real points too and simply stream in with the run).
-  const overview = hasLines ? src.lines : (hasSummary ? src.summary : null);
-  const markArrived = hasLines
-    ? (lineOverlay ? (i, t) => lineOverlay.markLineArrived(i, t) : null)
-    : (gmm ? (i, t) => gmm.markSplatArrived(i, t) : null);
+  // `overview` (+ markArrived) are populated when src.overviewReady resolves;
+  // until then the pump can't run because `pointHandle` (chained after the overview
+  // open) is still null. markArrived crossfades an overview primitive out as its
+  // real points arrive.
+  let markArrived = null;
   let itemCursor = 0;    // index of the next overview item to stream
   let drawHigh = 0;      // furthest point index written (items stream out of order)
   let curBatch = CONFIG.streamBatchMin || CONFIG.streamBatchSize;  // adaptive batch
@@ -1068,17 +1210,59 @@ function initScene(canvas, host, src) {
       .finally(() => { inFlight = false; });
   }
 
-  const hasOverview = !!overview;
+  // Build the overview overlay WHEN it resolves, and hand off from the placeholder.
+  // This runs before src.ready sets `pointHandle` (ready is chained after the
+  // overview open), so the pump can't fire until the overlay + markArrived exist.
+  let realTotal = target;
+  src.overviewReady
+    .then((ov) => {
+      const lines = ov && ov.lines, summary = ov && ov.summary;
+      hasLines = CONFIG.showLines && lines && (lines.count | 0) > 0;
+      hasSummary = !hasLines && CONFIG.showSplats && summary && (summary.count | 0) > 0;
+      if (hasLines) {
+        overview = lines;
+        // Tighten target to the points the lines actually cover (≤ maxPoints); the
+        // buffers were sized to maxPoints, so this only shrinks the draw target.
+        const L = lines.count | 0;
+        const covered = (lines.rangeStart[L - 1] >>> 0) + (lines.rangeCount[L - 1] >>> 0);
+        target = Math.min(target, covered);
+        lineOverlay = makeLineMesh(lines, pixelRatio);
+        lineOverlay.points.renderOrder = -1;   // draw before the real points
+        spin.add(lineOverlay.points);
+        markArrived = (i, t) => lineOverlay.markLineArrived(i, t);
+      } else if (hasSummary) {
+        overview = summary;
+        gmm = makeGmmCloud(summary, pixelRatio);
+        if (gmm) {
+          gmm.points.renderOrder = -1;
+          spin.add(gmm.points);
+          markArrived = (i, t) => gmm.markSplatArrived(i, t);
+        }
+      }
+      overviewSettled = true;
+      frame();   // refresh the overlay's fog uNearZ/uFarZ uniforms now it exists
+      // Hand off from the placeholder ONLY when an overview overlay was actually
+      // built and is now on screen. If NEITHER layer was present (empty/failed
+      // net), keep the placeholder as the standing view — it otherwise fades when
+      // the first real points arrive (see the pumps). This is why a bad/empty net
+      // still shows the placeholder globe instead of blanking.
+      const builtOverlay = (hasLines && lineOverlay) || (hasSummary && gmm);
+      if (builtOverlay && placeholder) placeholder.fadeOut(performance.now() / 1000);
+    })
+    .catch((err) => {
+      overviewSettled = true;   // no overview → let the plain pump take over
+      // Do NOT fade the placeholder here: with no overview it's the fallback view
+      // (it fades once real points stream in, if they do).
+      console.warn("[Miniset hero] overview build failed:", err);
+    });
 
-  // Resolve the background point-stream open. Until this lands, pumps no-op and
-  // only the overview renders — so the cloud appears after ONE net open, not two.
-  let realTotal = total;
+  // Resolve the background point-stream open (chained AFTER the overview open, so
+  // ASYNCIFY only ever has one suspension in flight). Until this lands the pump
+  // no-ops; the overview/placeholder carry the view.
   src.ready
     .then((r) => {
       pointHandle = r.handle;
       realTotal = r.total || realTotal;
-      // If we had no overview to bound `target` (plain-stream fallback), the
-      // buffers were sized to maxPoints, which still covers realTotal's stream.
     })
     .catch((err) => { console.warn("[Miniset hero] point stream open failed:", err); });
 
@@ -1087,26 +1271,44 @@ function initScene(canvas, host, src) {
   function tick(now) {
     const dt = lastFrameMs ? Math.min(0.05, (now - lastFrameMs) / 1000) : 0;  // clamp tab-switch jumps
     lastFrameMs = now;
-    swept = CONFIG.autoRotate ? (now / 1000) * CONFIG.rotateSpeed : swept;
+    // Auto-spin ACCUMULATES from the frame delta (not absolute time) so we can
+    // PAUSE it while the trackpad is grabbed and resume with no jump. Held-pad
+    // pauses `swept`, which also paces streaming — so point-loading pauses during
+    // the drag and resumes on release (fine: you grabbed it to inspect).
+    if (CONFIG.autoRotate && !padActive) swept += CONFIG.rotateSpeed * dt;
     // Spin about the body's pole (Z). `orient` leans this axis, so the globe
     // turns on a tilted, pole-up axis rather than with the poles on the side.
     spin.rotation.z = swept;
 
-    // Hand-orbit: integrate the joystick deflection into yaw/pitch (velocity ×
-    // dt), then set the userOrbit group's rotation (yaw about screen-up Y, pitch
-    // about screen-right X). Pitch is clamped so you can't tumble past the poles.
-    if (jx !== 0 || jy !== 0) {
-      orbitYaw += jx * CONFIG.joystickYawSpeed * dt;
-      orbitPitch += -jy * CONFIG.joystickPitchSpeed * dt;
-      const lim = THREE.MathUtils.degToRad(CONFIG.joystickPitchLimit);
-      orbitPitch = Math.max(-lim, Math.min(lim, orbitPitch));
-    }
-    userOrbit.rotation.set(orbitPitch, orbitYaw, 0, "YXZ");
+    // Hand-orbit: the trackpad drag accumulates orbitQuat (see its pointermove
+    // handler), so here we just copy it onto the userOrbit group. Quaternion → no
+    // gimbal lock, so the globe can be tumbled to any orientation.
+    userOrbit.quaternion.copy(orbitQuat);
 
-    if (hasOverview) pumpOverview(now); else pumpBatch(now);
+    // Pump the stream once an overview is resolved AND the point handle landed;
+    // pumpOverview itself no-ops until `pointHandle` is set. If there's genuinely
+    // no overview (both layers absent), fall back to the plain rotation pump.
+    if (overview) pumpOverview(now);
+    else if (pointHandle && overviewSettled) pumpBatch(now);
     material.uniforms.uTime.value = now / 1000;
     if (gmm) gmm.mat.uniforms.uTime.value = now / 1000;          // GMM fade-out
     if (lineOverlay) lineOverlay.mat.uniforms.uTime.value = now / 1000;  // line fade-out
+
+    // Placeholder crossfade: ramp uFade 0→1 over placeholderFadeOutMs from the
+    // moment the overview landed (fadeStart), then drop the mesh once fully faded.
+    if (placeholder) {
+      const fs = placeholder.points.userData.getFadeStart();
+      if (fs >= 0) {
+        const f = Math.min(1, (now / 1000 - fs) / (CONFIG.placeholderFadeOutMs / 1000));
+        placeholder.mat.uniforms.uFade.value = f;
+        if (f >= 1) {
+          spin.remove(placeholder.points);
+          placeholder.points.geometry.dispose();
+          placeholder.mat.dispose();
+          placeholder = null;
+        }
+      }
+    }
     renderer.render(scene, camera);
     updateCounter(now);
     raf = requestAnimationFrame(tick);
@@ -1143,11 +1345,20 @@ function initScene(canvas, host, src) {
         lineOverlay.mat.uniforms.uFogFalloff.value = CONFIG.fogFalloff;
         lineOverlay.points.visible = CONFIG.showLines;
       }
+      if (placeholder) {
+        placeholder.mat.uniforms.uColor.value.set(CONFIG.placeholderColor);
+        placeholder.mat.uniforms.uOpacity.value = CONFIG.placeholderOpacity;
+        placeholder.mat.uniforms.uSize.value = CONFIG.placeholderDotSize;
+        placeholder.mat.uniforms.uFogColor.value.set(CONFIG.fogColor);
+        placeholder.mat.uniforms.uFogStrength.value = CONFIG.fogStrength;
+        placeholder.mat.uniforms.uFogFalloff.value = CONFIG.fogFalloff;
+        placeholder.points.visible = CONFIG.showPlaceholder;
+      }
       applyRenderEdge();
       applyOrientation();
       // Keep the slider in sync if zoom was changed from the console.
       zoomInput.value = String(Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, CONFIG.zoom)));
-      joyWrap.style.display = CONFIG.joystick ? "" : "none";
+      padWrap.style.display = CONFIG.trackpad ? "" : "none";
       frame();
     },
     dispose() {
@@ -1157,15 +1368,16 @@ function initScene(canvas, host, src) {
       captionEl.remove();
       zoomInput.removeEventListener("input", onZoom);
       zoomWrap.remove();
-      joyWrap.removeEventListener("pointerdown", onJoyDown);
-      joyWrap.removeEventListener("pointermove", onJoyMove);
-      joyWrap.removeEventListener("pointerup", onJoyUp);
-      joyWrap.removeEventListener("pointercancel", onJoyUp);
-      joyWrap.remove();
+      padWrap.removeEventListener("pointerdown", onPadDown);
+      padWrap.removeEventListener("pointermove", onPadMove);
+      padWrap.removeEventListener("pointerup", onPadUp);
+      padWrap.removeEventListener("pointercancel", onPadUp);
+      padWrap.remove();
       geom.dispose();
       material.dispose();
       if (gmm) { gmm.points.geometry.dispose(); gmm.mat.dispose(); }
       if (lineOverlay) { lineOverlay.points.geometry.dispose(); lineOverlay.mat.dispose(); }
+      if (placeholder) { placeholder.points.geometry.dispose(); placeholder.mat.dispose(); }
       renderer.dispose();
       // Close the point handle if it (or its pending open) resolved.
       if (pointHandle) { try { src.Miniset.closePointsXYZ(pointHandle); } catch (_) {} }
