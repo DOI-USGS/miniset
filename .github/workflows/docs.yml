@@ -98,19 +98,21 @@ jobs:
             dirname "$(command -v node)"
           } >> "$GITHUB_PATH"
 
-      # Prebuild the emscripten sqlite3 PORT into the sysroot. USGSCSM's embedded
-      # branch calls find_package(Sqlite3) (PROJ/cmake/FindSqlite3.cmake), and the
-      # Emscripten toolchain restricts find_library/find_path to the sysroot
-      # (CMAKE_FIND_ROOT_PATH_MODE_LIBRARY/INCLUDE = ONLY) — so it can ONLY be
-      # satisfied by libsqlite3.a + sqlite3.h in the emsdk cache, never a host lib.
-      # A fresh emsdk cache doesn't have it built yet, so build it now. (This is
-      # only to satisfy the configure check; the sqlite3 actually linked into the
-      # module is our custom SQLITE_THREADSAFE=0 build from BuildWasmDependencies.)
-      - name: Prebuild emscripten sqlite3 port (sysroot lib for USGSCSM configure)
+      # Prebuild the emscripten sqlite3 + zlib PORTS into the sysroot. Several
+      # configure-time find_package() calls resolve ONLY against the sysroot,
+      # because the Emscripten toolchain pins find_library/find_path to it
+      # (CMAKE_FIND_ROOT_PATH_MODE_LIBRARY/INCLUDE = ONLY) — a host lib is never
+      # seen. A fresh emsdk cache has neither port built, so build both now:
+      #   - sqlite3 → USGSCSM's find_package(Sqlite3) (embedded PROJ branch)
+      #   - zlib    → GDAL's gdal_check_package(ZLIB), required by GDAL_USE_ZLIB=ON
+      # These only satisfy the configure checks; the sqlite3 actually linked into
+      # the module is our custom SQLITE_THREADSAFE=0 build (BuildWasmDependencies),
+      # and zlib is provided to GDAL from the same emsdk port.
+      - name: Prebuild emscripten sqlite3 + zlib ports (sysroot libs for configure)
         run: |
           set -eo pipefail
           source emsdk/emsdk_env.sh
-          embuilder build sqlite3
+          embuilder build sqlite3 zlib
 
       # Cache the heavy ExternalProject builds (PROJ/GDAL/SQLite) + CMake state so
       # only the first run pays the full multi-minute WASM dependency build.
