@@ -7,8 +7,8 @@ site_author: U.S. Geological Survey — Astrogeology Science Center
 # Canonical URL of the published site (GitHub Pages). Used for the sitemap and
 # canonical <link>s. Update the org/repo if the GitHub project path differs.
 site_url: https://DOI-USGS.github.io/miniset/
-repo_name: astrogeology/miniset
-repo_url: https://code.usgs.gov/astrogeology/miniset
+repo_name: DOI-USGS/miniset
+repo_url: https://github.com/DOI-USGS/miniset
 copyright: >-
   Provided by the U.S. Geological Survey. Preliminary/provisional software —
   see the disclaimer.
@@ -95,7 +95,7 @@ nav:
 
 extra:
   social:
-    - icon: fontawesome/brands/git-alt
-      link: https://code.usgs.gov/astrogeology/miniset
-      name: Miniset on USGS GitLab
+    - icon: fontawesome/brands/github
+      link: https://github.com/DOI-USGS/miniset
+      name: Miniset on GitHub
   generator: false

@@ -1,7 +1,7 @@
 # Building for WebAssembly
 
 The docs site ships a prebuilt WASM module in
-[`docs/docs/assets/wasm/`](https://code.usgs.gov/astrogeology/miniset).
+[`docs/docs/assets/wasm/`](https://github.com/DOI-USGS/miniset).
 This page covers rebuilding it yourself and refreshing the copy the
 [playground](playground.md) loads.
 
