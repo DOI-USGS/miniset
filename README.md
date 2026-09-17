@@ -226,4 +226,10 @@ emmake make miniset_wasm -j$(nproc)
 
 ---
 
-*Last Updated: 2026-06-09*
+## Generative AI Disclosure
+
+This repository contains software code that was generated or modified with the
+assistance of artificial intelligence (AI) tools, in accordance with U.S.
+Geological Survey (USGS) disclosure requirements. All AI-generated or AI-assisted
+code has been reviewed and validated by USGS developers. Contributors using AI tools are responsible for
+reviewing and testing their code. 
