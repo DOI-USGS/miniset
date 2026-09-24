@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout (with submodules)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # gdal, PROJ, usgscsm (csmapi) and StarDS are all needed to build the
           # WASM module; recurse so nested submodules come too.
