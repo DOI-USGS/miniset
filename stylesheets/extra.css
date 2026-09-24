@@ -1,0 +1,514 @@
+/* ==========================================================================
+   Miniset docs — custom styling for the landing page hero, feature cards,
+   and the WASM playground. Built on the Material for MkDocs design tokens
+   (var(--md-*)) so it tracks the light/dark palette automatically.
+   ========================================================================== */
+
+:root {
+  --ms-radius: 14px;
+  --ms-gradient: linear-gradient(135deg, #3949ab 0%, #5c6bc0 45%, #ff7043 130%);
+
+  /* Hero backdrop — a configurable DARK BLUE behind the point-cloud globe.
+     Tweak these two stops (or override --ms-hero-bg outright) to recolour it. */
+  --ms-hero-bg-1: #0a1430;   /* deep navy (top-left) */
+  --ms-hero-bg-2: #16265e;   /* dark blue (bottom-right) */
+  --ms-hero-bg: linear-gradient(135deg, var(--ms-hero-bg-1) 0%, var(--ms-hero-bg-2) 100%);
+}
+
+/* --------------------------------------------------------------------------
+   Hero
+   -------------------------------------------------------------------------- */
+
+.ms-hero {
+  position: relative;
+  margin: -1.2rem 0 2.5rem;
+  padding: 3.5rem 1.5rem 3.75rem;
+  border-radius: var(--ms-radius);
+  background: var(--ms-hero-bg);
+  color: #fff;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+/* Soft "planet" glow in the corner. Keyed to the hero backdrop so it reads as a
+   faint highlight on the dark blue, not a white smudge. */
+.ms-hero::after {
+  content: "";
+  position: absolute;
+  right: -140px;
+  top: -140px;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 30% 30%, rgba(120, 150, 240, 0.18), rgba(120, 150, 240, 0) 70%);
+  z-index: -1;
+}
+
+/* Three.js point-cloud canvas: fills the hero, sits behind the text. The JS
+   frames the cloud into the right ~2/3, leaving the left clear for copy. */
+.ms-hero__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  display: block;
+  /* The left-edge fade (where the cloud starts to render) is applied in JS from
+     CONFIG.renderEdge / renderEdgeSoftness (hero.js applyRenderEdge), so it's
+     tunable live; nothing to set here. */
+}
+
+.ms-hero__content {
+  position: relative;   /* above the canvas + scrim */
+  z-index: 1;
+  max-width: 46rem;
+}
+
+/* Readability SCRIM. A text-shadow alone can't give thin body text enough
+   contrast over the bright dots (it only blurs outward from the strokes). This
+   gradient layer instead darkens the whole text region and fades to transparent
+   over the globe on the right, so the copy always sits on a consistent dark
+   backing while the globe stays visible. It sits ABOVE the canvas (z-index -1)
+   and BELOW the content (z-index 1); `isolation: isolate` on .ms-hero scopes it.
+   Tune the two rgba alphas for more/less darkening, and the % stops for how far
+   right the scrim reaches. */
+.ms-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to right,
+    rgba(6, 12, 32, 1.0) 20%,
+    rgba(6, 12, 32, 0.72) 30%,
+    rgba(6, 12, 32, 0.35) 75%,
+    rgba(6, 12, 32, 1.0) 100%
+  );
+}
+
+/* A light shadow still helps the big title hold an edge over the brightest dots;
+   the scrim does the heavy lifting for body text. Buttons have their own
+   backgrounds, so they're excluded below. */
+.ms-hero__eyebrow,
+.ms-hero__title.ms-hero__title,
+.ms-hero p {
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6);
+}
+
+/* Buttons live inside the hero <p>, so their labels ("Try the playground below"
+   / "Get started") would inherit the paragraph's halo. They have their own
+   backgrounds/borders and don't need it — clear it. */
+.ms-hero .md-button {
+  text-shadow: none;
+}
+
+/* Subtle live "N points loaded" readout + a static caption for the streaming
+   point cloud. Both sit in the bottom-left corner, over the canvas but
+   understated so they don't compete with the headline. The caption stacks just
+   above the counter and shares its exact font/weight/colour. */
+.ms-hero__counter,
+.ms-hero__caption {
+  position: absolute;
+  left: 1.5rem;
+  z-index: 1;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  font-variant-numeric: tabular-nums;
+  color: rgba(255, 255, 255, 0.6);
+  pointer-events: none;
+  user-select: none;
+}
+
+.ms-hero__counter {
+  bottom: 0.85rem;
+}
+
+/* One line-height above the counter (anchored at its bottom, so if it wraps on a
+   narrow hero it grows upward, never over the counter). */
+.ms-hero__caption {
+  bottom: 2.1rem;
+  max-width: 24rem;
+  line-height: 1.4;
+}
+
+/* Very subtle vertical zoom slider on the hero's right edge. Drives CONFIG.zoom
+   (camera dolly) live. Faint at rest so it doesn't compete with the globe;
+   brightens when the hero (or the control itself) is hovered/focused. The native
+   range input is rotated -90deg so dragging UP zooms IN, deterministically across
+   browsers (no reliance on writing-mode range support). */
+.ms-hero__zoom {
+  position: absolute;
+  right: 0.75rem;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 150px;
+  width: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  opacity: 0.28;
+  transition: opacity 0.2s ease;
+}
+
+.ms-hero:hover .ms-hero__zoom,
+.ms-hero__zoom:hover,
+.ms-hero__zoom:focus-within {
+  opacity: 0.9;
+}
+
+.ms-hero__zoom input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 150px;              /* becomes the vertical travel after the rotate */
+  height: 2px;
+  transform: rotate(-90deg);
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  outline: none;
+  cursor: ns-resize;
+}
+
+.ms-hero__zoom input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.ms-hero__zoom input[type="range"]::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.75);
+  border: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+}
+
+.ms-hero__zoom input[type="range"]::-moz-range-track {
+  height: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+}
+
+/* Virtual orbit trackpad, bottom-right. A small translucent pad you drag on to
+   spin the globe; the JS (hero.js) maps the pointer's movement to orbit rotation.
+   Subtle at rest, brightening on hero hover / while dragging (.is-active). */
+.ms-hero__pad {
+  position: absolute;
+  right: 1.25rem;
+  bottom: 1.25rem;
+  width: 104px;
+  height: 72px;
+  border-radius: 12px;
+  z-index: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  /* faint inset so it reads as a recessed pad surface */
+  box-shadow: inset 0 0 12px rgba(255, 255, 255, 0.05);
+  opacity: 0.32;
+  transition: opacity 0.2s ease;
+  cursor: grab;
+  touch-action: none;                 /* also set in JS; belt + suspenders */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.ms-hero:hover .ms-hero__pad,
+.ms-hero__pad.is-active {
+  opacity: 0.92;
+}
+
+.ms-hero__pad.is-active {
+  cursor: grabbing;
+}
+
+/* PS5-style dot matrix on the pad face: an even grid of small dots via a repeating
+   radial-gradient. Inset from the edges and masked so the grid fades out toward the
+   border (reads as a touch surface, not a hard-edged texture). Pointer-inert so the
+   pad itself captures the drag. */
+.ms-hero__pad::before {
+  content: "";
+  position: absolute;
+  inset: 10px;
+  border-radius: 8px;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.75) 1.1px, transparent 1.3px);
+  background-size: 12px 12px;
+  background-position: center;
+  /* fade the dots out toward the pad edges */
+  -webkit-mask-image: radial-gradient(ellipse at center, #000 55%, transparent 100%);
+  mask-image: radial-gradient(ellipse at center, #000 55%, transparent 100%);
+  opacity: 0.85;
+}
+
+.ms-hero__eyebrow {
+  display: inline-block;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.18);
+  margin-bottom: 1rem;
+}
+
+.ms-hero__title.ms-hero__title {
+  color: #fff;
+  font-weight: 800;
+  font-size: 2.4rem;
+  line-height: 1.12;
+  margin: 0 0 1rem;
+}
+
+.ms-hero p {
+  font-size: 1.05rem;
+  line-height: 1.6;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+.ms-hero .md-button {
+  margin: 1.2rem 0.6rem 0 0;
+  border-color: rgba(255, 255, 255, 0.85);
+  color: #fff;
+}
+
+.ms-hero .md-button--primary {
+  background: #fff;
+  color: #303f9f;
+  border-color: #fff;
+}
+
+.ms-hero .md-button:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: #fff;
+  color: #fff;
+}
+
+.ms-hero .md-button--primary:hover {
+  background: #f3f3ff;
+  color: #303f9f;
+}
+
+@media screen and (max-width: 44.9em) {
+  .ms-hero__title.ms-hero__title {
+    font-size: 1.9rem;
+  }
+  /* Too cramped on a phone; drop the zoom + trackpad controls there. */
+  .ms-hero__zoom,
+  .ms-hero__pad {
+    display: none;
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Feature cards
+   -------------------------------------------------------------------------- */
+
+.ms-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15.5rem, 1fr));
+  gap: 1rem;
+  margin: 0 0 3rem;
+}
+
+.ms-card {
+  position: relative;
+  padding: 1.4rem 1.4rem 1.5rem;
+  border-radius: var(--ms-radius);
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.ms-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 10px 28px rgba(57, 73, 171, 0.16);
+  border-color: var(--md-accent-fg-color);
+}
+
+/* Accent bar that appears on hover. */
+.ms-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 3px;
+  width: 100%;
+  border-radius: var(--ms-radius) var(--ms-radius) 0 0;
+  background: var(--ms-gradient);
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.ms-card:hover::before {
+  opacity: 1;
+}
+
+.ms-card__icon {
+  font-size: 2rem;
+  color: var(--md-primary-fg-color);
+}
+
+[data-md-color-scheme="slate"] .ms-card__icon {
+  color: var(--md-accent-fg-color);
+}
+
+.ms-card h3 {
+  margin: 0.5rem 0 0.4rem;
+  font-weight: 700;
+}
+
+.ms-card p {
+  margin: 0;
+  font-size: 0.86rem;
+  line-height: 1.55;
+  color: var(--md-default-fg-color--light);
+}
+
+/* --------------------------------------------------------------------------
+   Playground
+   -------------------------------------------------------------------------- */
+
+.ms-playground {
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: var(--ms-radius);
+  overflow: hidden;
+  margin: 1.5rem 0 2rem;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+}
+
+.ms-playground__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.6rem 0.9rem;
+  background: var(--md-code-bg-color);
+  border-bottom: 1px solid var(--md-default-fg-color--lightest);
+}
+
+.ms-playground__buttons {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ms-playground__btn.md-button {
+  margin: 0;
+  padding: 0.28rem 0.9rem;
+  font-size: 0.75rem;
+  border-radius: 8px;
+  background: var(--md-primary-fg-color);
+  color: var(--md-primary-bg-color);
+  border-color: var(--md-primary-fg-color);
+}
+
+.ms-playground__btn.md-button:hover:not([disabled]) {
+  background: var(--md-accent-fg-color);
+  border-color: var(--md-accent-fg-color);
+  color: #fff;
+}
+
+.ms-playground__btn.md-button[disabled] {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ms-playground__btn--ghost.md-button {
+  background: transparent;
+  color: var(--md-default-fg-color--light);
+  border-color: var(--md-default-fg-color--lighter);
+}
+
+.ms-playground__btn--ghost.md-button:hover:not([disabled]) {
+  background: var(--md-default-fg-color--lightest);
+  color: var(--md-default-fg-color);
+  border-color: var(--md-default-fg-color--lighter);
+}
+
+/* Status pill. */
+.ms-playground__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: var(--md-default-fg-color--light);
+}
+
+.ms-playground__status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.ms-playground__status[data-state="loading"],
+.ms-playground__status[data-state="running"] {
+  color: #f9a825;
+}
+
+.ms-playground__status[data-state="ready"] {
+  color: #2e7d32;
+}
+
+.ms-playground__status[data-state="error"] {
+  color: var(--md-typeset-del-color, #c62828);
+}
+
+/* The fenced code block inside the playground becomes the editor. Strip the
+   default margins Material adds so it sits flush in the frame. */
+.ms-playground .highlight,
+.ms-playground pre {
+  margin: 0 !important;
+  border-radius: 0 !important;
+}
+
+.ms-playground pre code {
+  outline: none;
+}
+
+.ms-playground pre code[contenteditable]:focus {
+  box-shadow: inset 0 0 0 2px var(--md-accent-fg-color);
+}
+
+/* Output panel. */
+.ms-playground__output {
+  border-top: 1px solid var(--md-default-fg-color--lightest);
+  background: var(--md-code-bg-color);
+}
+
+.ms-playground__pre.ms-playground__pre {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  max-height: 20rem;
+  overflow: auto;
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--md-default-fg-color);
+  background: transparent;
+}
+
+/* Reduced-motion: no lift/transform animations. */
+@media (prefers-reduced-motion: reduce) {
+  .ms-card,
+  .ms-card::before {
+    transition: none;
+  }
+  .ms-card:hover {
+    transform: none;
+  }
+}
