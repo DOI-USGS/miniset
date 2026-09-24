@@ -1,0 +1,13 @@
+# Code owners for Miniset
+#
+# Changes to CI workflows require review from a code owner (DGEC requirement:
+# GitHub Actions Compliance). Workflows can run arbitrary code with repository
+# credentials, so they get a mandatory reviewer.
+#
+# For this to be enforced, the repository's branch protection rules for `main`
+# must have "Require review from Code Owners" enabled, and the team below needs
+# write access to this repository.
+#
+# Syntax reference: https://docs.github.com/articles/about-code-owners
+
+/.github/workflows/   @DOI-USGS/astrogeology-developers

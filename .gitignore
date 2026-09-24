@@ -1,0 +1,73 @@
+# Build directories
+build/
+build-*/
+dist/
+_deps/
+
+# CMake artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+install_manifest.txt
+compile_commands.json
+Testing/
+
+# Compiled objects and libraries
+*.o
+*.a
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.exe
+
+# WebAssembly build output
+*.wasm
+*.wasm.map
+docs/docs/assets/wasm/miniset.js
+docs/docs/assets/wasm/miniset.wasm
+
+# Editor and OS artifacts
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+desktop.ini
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# Backup and scratch files (never commit these)
+*.bak
+*.backup
+*.orig
+*.rej
+*.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# Documentation build output
+docs/site/
+
+# ISIS application print log
+print.prt
+
+# Local agent/tool settings (shared settings.json is tracked)
+.claude/settings.local.json

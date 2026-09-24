@@ -100,10 +100,14 @@
     <!-- Main Content -->
     <div class="main-content">
         <div class="map-container">
-            <!-- CartoCosmos Map (Local instance with GeoTIFF overlay support) -->
+            <!--
+                CartoCosmos Map (local instance with GeoTIFF overlay support).
+                The src is set at runtime by setupCartoCosmos() from the endpoint
+                in js/config.js; override it with window.MINISET_CONFIG or the
+                ?cartocosmos= query parameter rather than editing this file.
+            -->
             <iframe
                 id="cartocosmos-frame"
-                src="http://localhost:8000?target=MARS&hideControls=true"
                 class="map-iframe"
                 title="CartoCosmos planetary map viewer"
                 aria-label="Interactive planetary map showing footprint and raster overlays">

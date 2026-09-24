@@ -14,7 +14,7 @@ High-performance geospatial sensor modeling library with WebAssembly support for
 ### C++ Build
 
 ```bash
-mamba env create -f environment.yml -n miniset
+mamba env create -f environment.yaml -n miniset
 mamba activate miniset
 
 cd miniset
@@ -223,6 +223,29 @@ emmake make miniset_wasm -j$(nproc)
 - [PROJ](https://proj.org/) - Coordinate transformation
 - [CSM API](https://github.com/sminster/csm) - Community Sensor Model
 - [USGSCSM](https://github.com/DOI-USGS/usgscsm) - USGS CSM implementation
+
+## Contributing
+
+Bug reports, feature requests, and pull requests are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to report issues, set up a
+development build, and submit changes.
+
+## Contact / Maintainer
+
+**Kelvin Rodriguez** — <krodriguez@usgs.gov>
+U.S. Geological Survey, Astrogeology Science Center
+
+- Issues and feature requests: <https://github.com/DOI-USGS/miniset/issues>
+- Documentation: <https://DOI-USGS.github.io/miniset/>
+
+For suspected security vulnerabilities, please email the maintainer directly
+rather than opening a public issue.
+
+## License
+
+This software is released into the public domain under
+[CC0 1.0 Universal](LICENSE.md). See [DISCLAIMER.md](DISCLAIMER.md) for the
+USGS provisional software disclaimer.
 
 ---
 

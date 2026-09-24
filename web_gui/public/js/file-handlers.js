@@ -4,6 +4,7 @@
  */
 
 import { validateURL } from './validation.js';
+import { proxyUrl } from './config.js';
 
 // File state
 let isdData = null;
@@ -138,11 +139,11 @@ export async function fetchISDFromUrl(url, updateStatusCallback, detectTargetCal
     const signal = isdFetchController.signal;
 
     try {
-        // Use local proxy to bypass CORS
-        const proxyUrl = `http://localhost:8001/proxy?url=${encodeURIComponent(url)}`;
-        console.log('  Fetching via proxy:', proxyUrl);
+        // Use local proxy to bypass CORS (endpoint configured in config.js)
+        const proxied = proxyUrl(url);
+        console.log('  Fetching via proxy:', proxied);
 
-        const response = await fetch(proxyUrl, { signal });
+        const response = await fetch(proxied, { signal });
 
         console.log('  Response status:', response.status);
         if (!response.ok) {

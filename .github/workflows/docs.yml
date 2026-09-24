@@ -167,7 +167,9 @@ jobs:
       # underscore-prefixed asset dirs mkdocs emits). force_orphan keeps the
       # branch a single flat commit of the current site (no build history).
       - name: Publish to docs branch
-        uses: peaceiris/actions-gh-pages@v4
+        # Third-party action pinned to a full commit SHA (DGEC requirement).
+        # Update the SHA and the trailing version comment together.
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_dir: docs/site

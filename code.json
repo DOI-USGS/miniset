@@ -3,7 +3,7 @@
     "name": "Miniset",
     "organization": "U.S. Geological Survey",
     "description": "High-performance geospatial sensor modeling library with WebAssembly support for planetary science. Provides DEM operations, CSM camera models, and coordinate transformations for Mars, Moon, and Earth.",
-    "version": "main",
+    "version": "dev",
     "status": "Development",
 
     "permissions": {
@@ -47,7 +47,7 @@
     },
 
     "date": {
-      "metadataLastUpdated": "2024-06-09"
+      "metadataLastUpdated": "2026-09-24"
     }
   }
 ]

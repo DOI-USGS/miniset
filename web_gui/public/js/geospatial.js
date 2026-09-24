@@ -421,8 +421,8 @@ export async function projectAndDisplayGeoTIFF({
 
             // Check model validity
             try {
-                const imageSize = minisetV8.getImageSize(modelId);
-                console.error('  Model image size check:', imageSize);
+                const imageSizeCheck = minisetV8.getImageSize(modelId);
+                console.error('  Model image size check:', imageSizeCheck);
             } catch (modelErr) {
                 console.error('  Model may be invalid:', modelErr);
             }

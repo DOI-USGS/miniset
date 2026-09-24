@@ -3,6 +3,8 @@
  * Handles iframe communication with the CartoCosmos mapping interface
  */
 
+import { cartoCosmosUrl, needsProxy, proxyUrl } from './config.js';
+
 // Bridge state
 let cartoCosmosReady = false;
 let cartoCosmosFrame = null;
@@ -22,6 +24,12 @@ let lastRasterType = null; // 'url', 'file', or 'projected'
  */
 export function setupCartoCosmos(frameElement, updateStatusCallback, checkReadyCallback) {
     cartoCosmosFrame = frameElement;
+
+    // Point the iframe at the configured CartoCosmos instance. The URL lives in
+    // config.js rather than index.html so the port is set in one place.
+    if (!frameElement.getAttribute('src')) {
+        frameElement.src = cartoCosmosUrl();
+    }
 
     window.addEventListener('message', (e) => {
         console.log('→ Message from CartoCosmos:', typeof e.data, e.data);
@@ -160,9 +168,8 @@ export function handlePlanetChange(e, updateStatusCallback) {
     // Reset ready flag when changing planets
     cartoCosmosReady = false;
 
-    // Change CartoCosmos iframe URL with target parameter (local instance)
-    const baseUrl = 'http://localhost:8000';
-    const newSrc = `${baseUrl}?target=${target}&hideControls=true`;
+    // Change CartoCosmos iframe URL with target parameter (endpoint from config.js)
+    const newSrc = cartoCosmosUrl(target);
     console.log('Setting iframe src to:', newSrc);
     cartoCosmosFrame.src = newSrc;
 
@@ -186,11 +193,11 @@ export function sendGeoTIFFToCartoCosmos(url) {
     lastRasterType = 'url';
     lastRasterData = url;
 
-    // Route through proxy if it's an external S3 URL to bypass CORS
-    let proxyUrl = url;
-    if (url.startsWith('http') && !url.includes('localhost')) {
-        proxyUrl = `http://localhost:8001/proxy?url=${encodeURIComponent(url)}`;
-        console.log('  Using proxy URL:', proxyUrl);
+    // Route through the proxy if it's an external URL, to bypass CORS
+    let resolvedUrl = url;
+    if (needsProxy(url)) {
+        resolvedUrl = proxyUrl(url);
+        console.log('  Using proxy URL:', resolvedUrl);
     }
 
     const planetaryBody = document.getElementById('planetary-body')?.value || 'Mars';
@@ -199,7 +206,7 @@ export function sendGeoTIFFToCartoCosmos(url) {
 
     const message = {
         type: 'addRaster',
-        url: proxyUrl,
+        url: resolvedUrl,
         opacity: opacity,
         planetaryBody: planetaryBody,
         maxWidth: 2048,
